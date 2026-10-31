@@ -485,7 +485,7 @@ footer { padding: 8px 20px; color: var(--muted); font-weight: 600; display: flex
       <div class="row"><button id="offReadBtn">Lire la carte</button><button id="offSendBtn" class="primary">Envoyer à la carte</button></div>
       <p id="sched" style="font-weight:800;font-family:var(--title)"></p>
       <p class="note">De −60 à +120 min par pas de 5 min. Envoi accepté en Arrêt/Réglage seulement ; les valeurs
-        sont enregistrées dans la carte. Un potentiomètre reprend la main s'il est tourné en Arrêt/Réglage.</p>
+        sont enregistrées aussitôt dans la carte, qui n'a pas d'autre réglage des décalages.</p>
     </section>
 
     <section class="tab" id="tab-sun">
@@ -536,6 +536,19 @@ footer { padding: 8px 20px; color: var(--muted); font-weight: 600; display: flex
       <p id="m-result" class="note" style="margin:0 0 8px">Sélecteur sur Arrêt/Réglage, puis maintenir un bouton
         (souris, doigt, ou touches ← et →). Le moteur s'arrête dès qu'on relâche.</p>
       <canvas id="plot"></canvas>
+      <div id="stallBox">
+      <h2 style="margin:22px 0 4px">Seuils d'arrêt</h2>
+      <p class="note" style="margin:0">Le moteur s'arrête quand le courant reste au-dessus du seuil du sens pendant
+        0,1 s. Placer chaque seuil à mi-chemin entre le courant en marche et le courant en butée relevés ci-dessus ;
+        la descente plus bas que la montée, pour forcer moins sur une poule.</p>
+      <div class="row"><label for="stallO" style="min-width:290px;font-weight:700">Montée (ouverture)</label>
+        <input id="stallO" type="number" min="100" max="950" step="10" value="600" style="width:96px"> mA</div>
+      <div class="row"><label for="stallC" style="min-width:290px;font-weight:700">Descente (fermeture)</label>
+        <input id="stallC" type="number" min="100" max="950" step="10" value="400" style="width:96px"> mA</div>
+      <div class="row"><button id="stallReadBtn">Lire la carte</button><button id="stallSendBtn" class="primary">Envoyer à la carte</button></div>
+      <p class="note">De 100 à 950 mA par pas de 10 mA (limite du driver : 1 050 mA). Envoi accepté en Arrêt/Réglage,
+        moteur arrêté ; les seuils sont enregistrés aussitôt dans la carte et conservés sans alimentation.</p>
+      </div>
     </section>
 
     <section class="tab" id="tab-log">
@@ -593,7 +606,8 @@ const BAUD = 9600, REPLY_TIMEOUT_MS = 1000, WAKE_AFTER_IDLE_MS = 1000, WAKE_DELA
 // Bluetooth : le module ajoute sa latence (intervalle de connexion, 9600 bauds de son côté)
 const BLE_REPLY_TIMEOUT_MS = 2500, BLE_WAKE_DELAY_MS = 300, BLE_CHUNK = 20;
 const POLL_MS = 1000, MOTOR_REPEAT_MS = 100, PLOT_T_MAX_S = 20, PLOT_I_MAX_MA = 1200;
-const STALL_OPEN_MA = 600, STALL_CLOSE_MA = 400, ILIM_MA = 1050;
+const STALL_OPEN_MA = 600, STALL_CLOSE_MA = 400, ILIM_MA = 1050;   // seuils par défaut (EEPROM vierge)
+const STALL_MIN = 100, STALL_MAX = 950, STALL_STEP = 10;           // plage de la commande I
 const OFFSET_MIN = -60, OFFSET_MAX = 120, OFFSET_STEP = 5;
 
 const MODE_FR = {UNKNOWN: "inconnu", STOP: "Arrêt / Réglage", MANUAL: "Manuel", AUTO: "Automatique", INVALID: "incohérent (câblage)"};
@@ -619,6 +633,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const pad = n => String(n).padStart(2, "0");
 const fmtOffset = v => (v >= 0 ? "+" : "") + v;
 const offsetValid = v => Number.isInteger(v) && v >= OFFSET_MIN && v <= OFFSET_MAX && v % OFFSET_STEP === 0;
+const stallValid = v => Number.isInteger(v) && v >= STALL_MIN && v <= STALL_MAX && v % STALL_STEP === 0;
 const comma = s => s.replace(".", ",");
 
 class LinkError extends Error {}
@@ -640,6 +655,12 @@ function parseTime(reply) {
 function parseOffsets(reply) {
   const p = reply.trim().split(/\s+/);
   if (p.length !== 3 || (p[0] !== "O" && p[0] !== "OK")) return null;
+  const a = parseInt(p[1], 10), b = parseInt(p[2], 10);
+  return Number.isNaN(a) || Number.isNaN(b) ? null : [a, b];
+}
+function parseStall(reply) {
+  const p = reply.trim().split(/\s+/);
+  if (p.length !== 3 || (p[0] !== "I" && p[0] !== "OK")) return null;
   const a = parseInt(p[1], 10), b = parseInt(p[2], 10);
   return Number.isNaN(a) || Number.isNaN(b) ? null : [a, b];
 }
@@ -845,6 +866,7 @@ class SimBoard {
   constructor() {
     this.t0 = nowS(); this.rtcDeltaMs = -3 * 60e3; this.rtcValid = true; this.mode = "STOP"; this.vbat = 12650;
     this.batt = "OK"; this.offsets = [0, 30]; this.pos = "CLOSED"; this.doorX = 0; this.fault = "NONE"; this.log = [];
+    this.stall = [STALL_OPEN_MA, STALL_CLOSE_MA];
     this.counts = {late: 0, jam: 0, obst: 0, tmo: 0, nocur: 0, wdt: 0, ovf: 0};
     this.injectObstacle = false; this.autoMove = null; this.test = null; this.current = 0;
   }
@@ -919,7 +941,7 @@ class SimBoard {
     else if (atEnd) { t.stallT = t.stallT || now; i = Math.min(ILIM_MA, SIM.RUN_MA + Math.floor((now - t.stallT) * 4000)); }
     else i = SIM.RUN_MA + rnd(-15, 15);
     this.current = i; t.imax = Math.max(t.imax, i);
-    const thr = t.dir === "O" ? STALL_OPEN_MA : STALL_CLOSE_MA;
+    const thr = t.dir === "O" ? this.stall[0] : this.stall[1];
     if (el >= SIM.INRUSH_S && i > thr) {
       t.over = t.over || now;
       if (now - t.over >= SIM.STALL_CONFIRM_S) { this.pos = t.dir === "O" ? "OPEN" : "CLOSED"; this.stopTest("STALL", true); }
@@ -956,6 +978,13 @@ class SimBoard {
       const v = parseOffsets(line);
       if (!v || !v.every(offsetValid)) return "ERR";
       this.offsets = v; return "OK " + v.map(fmtOffset).join(" ");
+    }
+    if (up === "I?") return "I " + this.stall.join(" ");
+    if (up.startsWith("I ")) {
+      if (this.mode !== "STOP" || (this.test && this.test.st === "RUN")) return "ERR MODE";
+      const v = parseStall(line);
+      if (!v || !v.every(stallValid)) return "ERR";
+      this.stall = v; return "OK " + v.join(" ");
     }
     if (up === "M O" || up === "M C" || up === "M 0") return this.motor(up[2]);
     return "ERR";
@@ -1053,7 +1082,7 @@ const app = {
     $("connInfo").textContent = `Connecté : ${this.link.name}`;
     this.setStatus("Connecté. Interrogation de la carte…");
     this.linkOk = false; this.boardTime = null;
-    this.readOffsets(); this.readLog();
+    this.readOffsets(); this.readStall(); this.readLog();
   },
 
   async disconnect() {
@@ -1240,6 +1269,24 @@ const app = {
       if (this.check(r, "Décalages")) { this.setStatus(`Décalages enregistrés dans la carte : ${r.slice(3)} min.`); this.lastPoll = 0; }
     } catch (e) { this.setStatus(`Décalages : ${e.message}`, true); }
   },
+  async readStall() {
+    try {
+      const v = parseStall(await this.exchange("I?"));
+      if (v) { $("stallO").value = v[0]; $("stallC").value = v[1]; this.drawPlot(); }
+    } catch (e) { /* idem */ }
+  },
+  async sendStall() {
+    const v = [Number($("stallO").value), Number($("stallC").value)];
+    if (!v.every(stallValid)) { alert("Seuils d'arrêt : de 100 à 950 mA, par pas de 10 mA."); return; }
+    try {
+      const r = await this.exchange("I " + v.join(" "));
+      if (this.check(r, "Seuils d'arrêt")) { this.setStatus(`Seuils d'arrêt enregistrés dans la carte : ${r.slice(3).replace(" ", " mA et ")} mA.`); this.drawPlot(); }
+    } catch (e) { this.setStatus(`Seuils d'arrêt : ${e.message}`, true); }
+  },
+  stallShown() {
+    const v = [Number($("stallO").value), Number($("stallC").value)];
+    return v.every(stallValid) ? v : [STALL_OPEN_MA, STALL_CLOSE_MA];
+  },
   async sendRaw() {
     const line = $("termIn").value.trim();
     if (!line) return;
@@ -1307,7 +1354,8 @@ const app = {
     c.textAlign = "left"; c.textBaseline = "top"; c.fillText("mA", 6, 4);
     c.strokeStyle = col("--line"); c.strokeRect(ml, mt, pw, ph);
     c.setLineDash([5, 4]); c.textAlign = "right"; c.textBaseline = "bottom";
-    for (const [v, txt, cn] of [[ILIM_MA, "limite du driver", "--ilim"], [STALL_OPEN_MA, "seuil blocage ouverture", "--thr-o"], [STALL_CLOSE_MA, "seuil blocage fermeture", "--thr-c"]]) {
+    const [thrO, thrC] = this.stallShown();
+    for (const [v, txt, cn] of [[ILIM_MA, "limite du driver", "--ilim"], [thrO, "seuil d'arrêt montée", "--thr-o"], [thrC, "seuil d'arrêt descente", "--thr-c"]]) {
       c.strokeStyle = c.fillStyle = col(cn); c.beginPath(); c.moveTo(ml, y(v)); c.lineTo(ml + pw, y(v)); c.stroke(); c.fillText(txt, ml + pw - 4, y(v) - 3);
     }
     c.setLineDash([]); c.lineWidth = 2; c.lineJoin = "round";
@@ -1361,6 +1409,9 @@ $("logReadBtn").addEventListener("click", () => app.readLog());
 $("logClearBtn").addEventListener("click", () => app.clearLog());
 $("offReadBtn").addEventListener("click", () => app.readOffsets());
 $("offSendBtn").addEventListener("click", () => app.sendOffsets());
+$("stallReadBtn").addEventListener("click", () => app.readStall());
+$("stallSendBtn").addEventListener("click", () => app.sendStall());
+for (const id of ["stallO", "stallC"]) $(id).addEventListener("input", () => app.drawPlot());
 $("termSend").addEventListener("click", () => app.sendRaw());
 $("termIn").addEventListener("keydown", e => { if (e.key === "Enter") app.sendRaw(); });
 $("plotClear").addEventListener("click", () => { app.curves = []; app.drawPlot(); });
