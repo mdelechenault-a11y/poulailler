@@ -1,0 +1,1753 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>PoulePorteManager — le poulailler</title>
+<!--
+  Console PoulePorteManager, version navigateur « poulailler » (HTML5 + Web Serial / Web Bluetooth).
+  Équivalent de firmware/tools/ppm_console.py ; protocole : docs/protocole_console.md.
+  Deux liaisons vers J4 (UART 3,3 V, 9600 bauds) :
+  - port série : adaptateur USB-série, dans Chrome ou Edge sur ordinateur ;
+  - Bluetooth : module BLE « UART transparent » (HM-10 ou clone, service FFE0) branché sur J4,
+    dans Chrome ou Edge sur ordinateur, Chrome sur Android, ou l'application Bluefy sur iPhone
+    (Safari ne gère ni l'un ni l'autre).
+  « Connecter » ouvre la liste des ports ou des modules Bluetooth à portée.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,800&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* Mise en page : en-tête en bandeau de bois, scène du poulailler, quatre tuiles d'état, puis les onglets
+   (planches) et le panneau du simulateur à droite. Palette : grange, bois, prairie, paille ; nuit bleu ardoise. */
+:root {
+  --paper: #fbf6ea; --paper-2: #f2e7cd; --panel: #fffdf7; --ink: #33251a; --muted: #7a6550; --line: #e6d8b9;
+  --soft: #f7efdc; --wood: #a8673a; --wood-2: #7f4a26; --wood-ink: #fff6e8; --barn: #b6402f; --barn-ink: #fff4ea;
+  --meadow: #6d9b45; --meadow-2: #4f7c33; --straw: #e7c46a; --sky: #8fcbeb; --night: #24304f; --sun: #f0a63a;
+  --accent: #b6402f; --alert: #b3261e; --ok: #3f7a2c; --warn: #9a5b00; --run: #b56a10;
+  --open: #4f7c33; --close: #7a4fb0; --ilim: #b3261e; --thr-o: #c27a12; --thr-c: #2f6b8f;
+  --shadow: 0 1px 0 rgba(90, 60, 30, .06), 0 10px 24px -14px rgba(90, 60, 30, .45);
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --title: "Fraunces", Georgia, serif;
+  --r: 16px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #18140f; --paper-2: #221c15; --panel: #231d17; --ink: #f2e8d6; --muted: #b5a088; --line: #3f3428;
+    --soft: #2b241c; --wood: #b97a48; --wood-2: #7f4a26; --wood-ink: #fff6e8; --barn: #d9614c; --barn-ink: #18140f;
+    --meadow: #86b65c; --meadow-2: #5f8f3d; --straw: #e2bd5c; --sky: #4f86a8; --night: #10172b; --sun: #f0b35a;
+    --accent: #e07a5f; --alert: #ff8a7a; --ok: #9fd27a; --warn: #f0b35a; --run: #f0b35a;
+    --open: #9fd27a; --close: #c3a2f2; --ilim: #ff8a7a; --thr-o: #f0b35a; --thr-c: #7fb8dc;
+    --shadow: 0 1px 0 rgba(0,0,0,.3), 0 12px 26px -14px rgba(0,0,0,.8);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #18140f; --paper-2: #221c15; --panel: #231d17; --ink: #f2e8d6; --muted: #b5a088; --line: #3f3428;
+  --soft: #2b241c; --wood: #b97a48; --wood-2: #7f4a26; --wood-ink: #fff6e8; --barn: #d9614c; --barn-ink: #18140f;
+  --meadow: #86b65c; --meadow-2: #5f8f3d; --straw: #e2bd5c; --sky: #4f86a8; --night: #10172b; --sun: #f0b35a;
+  --accent: #e07a5f; --alert: #ff8a7a; --ok: #9fd27a; --warn: #f0b35a; --run: #f0b35a;
+  --open: #9fd27a; --close: #c3a2f2; --ilim: #ff8a7a; --thr-o: #f0b35a; --thr-c: #7fb8dc;
+  --shadow: 0 1px 0 rgba(0,0,0,.3), 0 12px 26px -14px rgba(0,0,0,.8);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  min-height: 100vh; color: var(--ink); font: 15px/1.5 "Nunito", "Segoe UI", system-ui, sans-serif;
+  background:
+    radial-gradient(1100px 480px at 8% -12%, rgba(231,196,106,.22), transparent 60%),
+    repeating-linear-gradient(115deg, transparent 0 22px, rgba(168,103,58,.03) 22px 24px),
+    var(--paper);
+  display: flex; flex-direction: column;
+}
+select, input, button { font: inherit; color: inherit; }
+select, input[type=number], input[type=text] {
+  background: var(--panel); border: 1.5px solid var(--line); border-radius: 10px; padding: 7px 10px;
+}
+input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px solid var(--straw); outline-offset: 2px; }
+button {
+  background: var(--soft); border: 1.5px solid var(--line); border-radius: 999px; padding: 7px 16px;
+  cursor: pointer; font-weight: 700; transition: transform .08s, border-color .15s, background .15s;
+}
+button:hover:not(:disabled) { border-color: var(--wood); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--barn); color: var(--barn-ink); border-color: var(--barn); }
+button.wood { background: var(--wood); color: var(--wood-ink); border-color: var(--wood-2); }
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ---------- en-tête ---------- */
+header {
+  display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 10px 20px;
+  background: linear-gradient(180deg, var(--wood), var(--wood-2)); color: var(--wood-ink);
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,.14), 0 6px 16px -10px rgba(60,30,10,.6);
+  position: sticky; top: 0; z-index: 5;
+}
+header::after { /* planches */
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .14;
+  background: repeating-linear-gradient(0deg, transparent 0 15px, rgba(0,0,0,.55) 15px 16px);
+}
+.brand { display: flex; align-items: center; gap: 10px; margin-right: auto; position: relative; z-index: 1; min-width: 0; }
+.brand svg { width: 40px; height: 40px; flex: none; }
+.brand h1 { margin: 0; font: 800 21px/1.05 var(--title); letter-spacing: .2px; }
+.brand small { display: block; font-weight: 600; opacity: .85; font-size: 12.5px; }
+.conn { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; position: relative; z-index: 1; min-width: 0; max-width: 100%; }
+.conn select { background: rgba(255,248,236,.95); color: #33251a; border-color: transparent; border-radius: 999px; padding: 7px 12px; min-width: 0; max-width: 100%; }
+#connBtn.primary { background: var(--straw); color: #33251a; border-color: #c9a24a; }
+#connBtn { background: rgba(255,255,255,.14); color: var(--wood-ink); border-color: rgba(255,255,255,.45); }
+.linkpill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px;
+  background: rgba(0,0,0,.18); font-weight: 700; font-size: 13.5px; white-space: nowrap; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #c9b8a0; flex: none;
+  box-shadow: 0 0 0 2px rgba(255,255,255,.3); }
+.dot.on { background: #8fd16a; box-shadow: 0 0 0 2px rgba(255,255,255,.3), 0 0 10px #8fd16a; }
+.dot.bad { background: #ff8a7a; }
+#noLink { display: none; margin: 0; padding: 10px 20px; background: var(--straw); color: #33251a; font-weight: 600; }
+
+main { flex: 1; width: 100%; max-width: 1260px; margin: 0 auto; padding: 18px 20px 10px; display: flex; gap: 18px; min-height: 0; }
+.col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+
+/* ---------- scène ---------- */
+.scene-card { position: relative; border-radius: 20px; overflow: hidden; box-shadow: var(--shadow); background: #9fd3ef;
+  outline: 2px solid color-mix(in srgb, var(--wood-2) 70%, transparent); outline-offset: -2px; }
+#scene { display: block; width: 100%; height: auto; aspect-ratio: 900 / 330; }
+.caption { position: absolute; left: 14px; bottom: 12px; right: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; pointer-events: none; }
+.chip { background: rgba(255, 252, 240, .93); color: #33251a; border-radius: 999px; padding: 4px 12px; font-weight: 700;
+  font-size: 14px; box-shadow: 0 2px 6px rgba(0,0,0,.18); }
+.chip.alert { background: #fde3dc; color: #8f1d14; }
+#sceneMsg { font-family: var(--title); font-size: 16px; }
+
+/* ---------- tuiles d'état ---------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 10px; }
+.tile { background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 10px 14px 11px;
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px; align-items: center; box-shadow: var(--shadow); min-width: 0; }
+.tile .ico { grid-row: span 2; width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--soft); color: var(--muted); }
+.tile .ico svg { width: 22px; height: 22px; }
+.tile .lbl { font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 800; }
+.tile .val { font: 800 19px/1.2 var(--title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .sub { grid-column: 2; font-size: 13px; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile[data-s=ok] .ico { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.tile[data-s=run] .ico { background: color-mix(in srgb, var(--run) 18%, transparent); color: var(--run); }
+.tile[data-s=warn] .ico { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.tile[data-s=alert] .ico { background: color-mix(in srgb, var(--alert) 16%, transparent); color: var(--alert); }
+.tile[data-s=alert] .val { color: var(--alert); }
+
+/* ---------- onglets façon planches ---------- */
+nav { display: flex; gap: 4px; padding: 4px; background: var(--paper-2); border: 1.5px solid var(--line); border-radius: 14px;
+  overflow-x: auto; scrollbar-width: thin; }
+nav button { flex: none; border: 0; border-radius: 10px; padding: 8px 14px; background: transparent; color: var(--muted); font-weight: 800; }
+nav button:hover { color: var(--ink); }
+nav button[aria-selected=true] { background: var(--wood); color: var(--wood-ink); box-shadow: inset 0 -3px 0 rgba(0,0,0,.16), 0 2px 6px -2px rgba(60,30,10,.5); }
+section.tab { display: none; background: var(--panel); border: 1.5px solid var(--line); border-radius: var(--r); padding: 20px;
+  box-shadow: var(--shadow); min-height: 0; min-width: 0; }
+section.tab.on { display: flex; flex-direction: column; }
+h2 { font: 800 19px/1.2 var(--title); margin: 0 0 12px; text-wrap: balance; }
+
+/* ---------- cartes ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 14px; }
+.card { background: var(--soft); border: 1.5px solid var(--line); border-radius: 14px; padding: 14px 16px; position: relative; min-width: 0; }
+.card h3 { margin: 0 0 10px; font: 800 15.5px/1.2 var(--title); display: flex; align-items: center; gap: 10px; }
+.card h3 svg { width: 30px; height: 30px; padding: 5px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); flex: none; }
+dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 14px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; font-weight: 800; font-variant-numeric: tabular-nums; min-width: 0; }
+.alert { color: var(--alert); } .ok { color: var(--ok); } .muted { color: var(--muted); font-weight: 600; }
+.note { color: var(--muted); max-width: 72ch; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+.batt { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.batt .shell { width: 70px; height: 26px; border: 2.5px solid var(--ink); border-radius: 6px; padding: 2px; position: relative; flex: none; }
+.batt .shell::after { content: ""; position: absolute; right: -7px; top: 6px; width: 4px; height: 10px; background: var(--ink); border-radius: 0 2px 2px 0; }
+.batt .fill { height: 100%; width: 0; border-radius: 3px; background: var(--meadow); transition: width .6s, background .6s; }
+.timeline { position: relative; height: 30px; margin: 4px 0 4px; border-radius: 999px; overflow: hidden;
+  background: linear-gradient(90deg, var(--night), var(--night) var(--o, 30%), #f7d77a var(--o, 30%), #9fd3ef calc(var(--o, 30%) + 6%), #9fd3ef calc(var(--c, 72%) - 6%), #f2a65a var(--c, 72%), var(--night) var(--c, 72%)); }
+.timeline .now { position: absolute; top: -2px; bottom: -2px; width: 3px; background: var(--barn); left: var(--n, 50%); border-radius: 2px; box-shadow: 0 0 0 2px rgba(255,255,255,.75); }
+.tl-labels { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); font-weight: 700; margin-bottom: 8px; }
+
+/* ---------- essai moteur ---------- */
+.stats { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 10px 0 6px; }
+.stats b { display: inline-block; min-width: 7ch; font-variant-numeric: tabular-nums; }
+button.big { font-size: 17px; padding: 14px 22px; touch-action: none; user-select: none; }
+button.big.active { outline: 4px solid var(--straw); }
+#plot { width: 100%; height: 340px; border: 1.5px solid var(--line); border-radius: 12px; background: var(--panel); }
+
+table { border-collapse: collapse; }
+td, th { padding: 5px 14px 5px 0; text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 700; }
+tbody tr + tr td { border-top: 1px dashed var(--line); }
+#term { height: 360px; overflow: auto; font: 13px/1.45 var(--mono); background: #2b2219; color: #f2e8d6;
+  border-radius: 12px; padding: 10px 12px; white-space: pre; }
+#term .tx { color: #e7c46a; } #term .err { color: #ff8a7a; }
+
+/* ---------- soleil ---------- */
+.sun-head { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-bottom: 12px; }
+.sun-head h2 { margin: 0 auto 0 0; }
+.seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--paper-2); border: 1.5px solid var(--line); border-radius: 999px; }
+.seg button { border: 0; padding: 5px 14px; background: transparent; color: var(--muted); }
+.seg button[aria-pressed=true] { background: var(--wood); color: var(--wood-ink); }
+.period { display: inline-flex; align-items: center; gap: 6px; }
+.period b { min-width: 9.5ch; text-align: center; font: 800 16px var(--title); }
+.period button { padding: 5px 11px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); gap: 10px; margin-bottom: 12px; }
+.kpi { background: var(--soft); border: 1.5px solid var(--line); border-radius: 12px; padding: 8px 12px; min-width: 0; }
+.kpi .lbl { font-size: 11.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 800; }
+.kpi .val { font: 800 18px/1.25 var(--title); font-variant-numeric: tabular-nums; }
+.kpi .sub { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.sun-chart { position: relative; }
+#sunPlot { display: block; width: 100%; height: 380px; border-radius: 12px; background: var(--panel); border: 1.5px solid var(--line); touch-action: pan-y; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1.5px solid var(--line); border-radius: 10px;
+  padding: 8px 10px; box-shadow: var(--shadow); font-size: 13px; min-width: 190px; z-index: 2; }
+.tip b { font-family: var(--title); }
+.tip dl { gap: 1px 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 0; font-size: 13px; color: var(--muted); font-weight: 700; }
+.legend i { display: inline-block; width: 18px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+#sunCheck { margin: 10px 0 0; font-weight: 700; }
+#sunCheck.ok { color: var(--ok); } #sunCheck.alert { color: var(--alert); }
+.table-wrap { overflow-x: auto; margin-top: 14px; border: 1.5px solid var(--line); border-radius: 12px; max-height: 420px; overflow-y: auto; }
+.table-wrap table { width: 100%; font-variant-numeric: tabular-nums; font-size: 14px; }
+.table-wrap th { position: sticky; top: 0; background: var(--paper-2); font-size: 12px; letter-spacing: .05em; text-transform: uppercase; padding: 8px 12px; }
+.table-wrap td { padding: 5px 12px; border-top: 1px solid var(--line); white-space: nowrap; }
+.table-wrap tbody tr + tr td { border-top: 1px solid var(--line); }
+.table-wrap tr.today td { background: color-mix(in srgb, var(--straw) 28%, transparent); font-weight: 800; }
+.table-wrap td.o { color: var(--open); font-weight: 800; } .table-wrap td.c { color: var(--close); font-weight: 800; }
+
+/* ---------- panneau du simulateur ---------- */
+aside { width: 250px; flex: none; display: none; }
+aside.on { display: block; }
+aside .board { background: var(--panel); border: 1.5px solid var(--line); border-radius: var(--r); padding: 16px; box-shadow: var(--shadow);
+  position: sticky; top: 76px; }
+aside h2 { font-size: 16px; }
+aside label { display: block; margin: 4px 0; font-weight: 600; }
+aside button { width: 100%; margin-top: 8px; }
+input[type=range] { width: 100%; accent-color: var(--barn); }
+
+footer { padding: 8px 20px; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 10px; }
+#status { min-height: 1.5em; }
+#status.alert { color: var(--alert); }
+.grass { height: 30px; background:
+  radial-gradient(14px 26px at 10px 34px, var(--meadow) 98%, transparent) 0 0 / 22px 34px repeat-x,
+  radial-gradient(12px 22px at 10px 34px, var(--meadow-2) 98%, transparent) 11px 4px / 22px 34px repeat-x; opacity: .9; }
+
+/* ---------- animations de la scène ---------- */
+@keyframes peck { 0%, 55%, 100% { transform: rotate(0deg); } 65%, 85% { transform: rotate(38deg); } 75% { transform: rotate(30deg); } }
+@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+@keyframes drift { from { transform: translateX(-160px); } to { transform: translateX(1060px); } }
+@keyframes zzz { 0% { opacity: 0; transform: translate(0, 0); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(14px, -26px); } }
+@keyframes twinkle { 0%, 100% { opacity: .9; } 50% { opacity: .3; } }
+.hen .head { transform-box: fill-box; transform-origin: 20% 90%; animation: peck 3.2s ease-in-out infinite; }
+.hen .body { animation: bob 1.6s ease-in-out infinite; }
+.cloud { animation: drift linear infinite; }
+.zz text { animation: zzz 3s ease-out infinite; }
+.star { animation: twinkle 3s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .hen .head, .hen .body, .cloud, .zz text, .star { animation: none; } }
+
+@media (max-width: 900px) {
+  main { flex-direction: column; padding: 14px 16px 8px; }
+  aside { width: auto; }
+  aside .board { position: static; }
+  header { position: static; padding: 10px 16px; }
+  .brand h1 { font-size: 19px; }
+  #sunPlot { height: 300px; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- Poule (dessin original), couleur du plumage par « color » -->
+    <symbol id="hen" viewBox="0 0 80 70">
+      <g class="body">
+        <path d="M14 30 C4 22 6 10 14 8 C14 18 20 22 24 24 Z" fill="currentColor" stroke="#5a3a20" stroke-width="1.5"/>
+        <path d="M18 18 C12 10 20 4 24 10" fill="none" stroke="#5a3a20" stroke-width="1.5"/>
+        <ellipse cx="38" cy="38" rx="25" ry="19" fill="currentColor" stroke="#5a3a20" stroke-width="1.8"/>
+        <path d="M28 36 C34 46 46 46 50 38" fill="none" stroke="#5a3a20" stroke-width="1.5" opacity=".6"/>
+        <path d="M30 56 L28 66 M28 66 L24 68 M28 66 L31 69 M44 56 L45 66 M45 66 L41 68 M45 66 L48 69" stroke="#d9862b" stroke-width="2.4" stroke-linecap="round" fill="none"/>
+      </g>
+      <g class="head">
+        <path d="M56 12 c1 -6 6 -7 7 -2 c2 -5 7 -4 6 1 c4 -1 5 4 1 6 Z" fill="#d6322a" stroke="#8f1d14" stroke-width="1"/>
+        <circle cx="62" cy="24" r="10" fill="currentColor" stroke="#5a3a20" stroke-width="1.8"/>
+        <path d="M71 23 L79 26 L71 29 Z" fill="#f2a93b" stroke="#a5651a" stroke-width="1"/>
+        <path d="M68 31 c2 5 -3 7 -4 2" fill="#d6322a"/>
+        <circle cx="65" cy="22" r="1.8" fill="#2a1a10"/>
+      </g>
+    </symbol>
+    <symbol id="ic-door" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="15" cy="12" r="1.3" fill="currentColor"/></symbol>
+    <symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="ic-bolt" viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-switch" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="8" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="12" r="2.4" fill="currentColor"/></symbol>
+    <symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="ic-egg" viewBox="0 0 24 24"><path d="M12 2.5c-4 0-7 6.5-7 11a7 7 0 0014 0c0-4.5-3-11-7-11z" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+  </defs>
+</svg>
+
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 80 70" style="color:#f4e2c2" aria-hidden="true"><use href="#hen"/></svg>
+    <div><h1>PoulePorteManager</h1><small>la porte du poulailler d'Arleuf</small></div>
+  </div>
+  <div class="conn">
+    <span class="linkpill"><span class="dot" id="linkDot"></span><span id="connInfo">Non connecté</span></span>
+    <select id="source" aria-label="Source">
+      <option value="serial">Port série (adaptateur sur J4)</option>
+      <option value="ble">Bluetooth (module HM-10 sur J4)</option>
+      <option value="sim">Simulateur (sans carte)</option>
+    </select>
+    <button id="connBtn" class="primary">Connecter</button>
+  </div>
+</header>
+<p id="noLink">Ce navigateur ne peut parler à la carte ni par le port série ni en Bluetooth : sur ordinateur, ouvrez
+  ce fichier dans Chrome ou Edge ; sur iPhone, dans l'application Bluefy. Le simulateur fonctionne partout.</p>
+
+<main>
+  <div class="col">
+    <div class="scene-card">
+      <svg id="scene" viewBox="0 0 900 330" role="img" aria-label="Le poulailler et sa porte">
+        <defs>
+          <linearGradient id="skyDay" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7cc3ea"/><stop offset="1" stop-color="#d7f0fb"/></linearGradient>
+          <linearGradient id="skyDusk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5d5aa0"/><stop offset=".6" stop-color="#f19a6b"/><stop offset="1" stop-color="#fbd38a"/></linearGradient>
+          <linearGradient id="skyNight" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#101833"/><stop offset="1" stop-color="#2c3a6b"/></linearGradient>
+          <linearGradient id="plank" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#b8743f"/><stop offset="1" stop-color="#9a5a2f"/></linearGradient>
+          <pattern id="planks" width="26" height="200" patternUnits="userSpaceOnUse"><rect width="26" height="200" fill="url(#plank)"/><rect x="25" width="1.5" height="200" fill="#6f3d1c" opacity=".55"/><circle cx="6" cy="40" r="1.2" fill="#5a3216"/><circle cx="18" cy="140" r="1.2" fill="#5a3216"/></pattern>
+          <clipPath id="doorClip"><rect x="404" y="170" width="62" height="86" rx="4"/></clipPath>
+        </defs>
+        <!-- ciel -->
+        <rect width="900" height="330" fill="url(#skyDay)"/>
+        <rect id="duskSky" width="900" height="330" fill="url(#skyDusk)" opacity="0"/>
+        <rect id="nightSky" width="900" height="330" fill="url(#skyNight)" opacity="0"/>
+        <g id="stars" opacity="0" fill="#fff8d8">
+          <circle class="star" cx="80" cy="40" r="1.6"/><circle class="star" cx="160" cy="80" r="1.2" style="animation-delay:.6s"/>
+          <circle class="star" cx="250" cy="30" r="1.8" style="animation-delay:1.2s"/><circle class="star" cx="610" cy="50" r="1.4" style="animation-delay:.3s"/>
+          <circle class="star" cx="700" cy="24" r="1.2" style="animation-delay:1.8s"/><circle class="star" cx="820" cy="70" r="1.7" style="animation-delay:.9s"/>
+          <circle class="star" cx="520" cy="26" r="1.1" style="animation-delay:2.2s"/><circle class="star" cx="350" cy="64" r="1.3" style="animation-delay:1.5s"/>
+        </g>
+        <!-- soleil et lune : position mise à jour selon l'heure -->
+        <g id="sun"><circle r="34" fill="#ffe27a" opacity=".35"/><circle r="24" fill="#ffd84d"/></g>
+        <g id="moon" opacity="0"><circle r="20" fill="#f6efd2"/><circle r="20" cx="9" cy="-6" fill="#1a2550" id="moonShade"/></g>
+        <!-- nuages -->
+        <g id="clouds" fill="#ffffff" opacity=".9">
+          <g class="cloud" style="animation-duration:95s"><ellipse cx="120" cy="60" rx="46" ry="16"/><ellipse cx="146" cy="50" rx="28" ry="18"/><ellipse cx="96" cy="54" rx="22" ry="13"/></g>
+          <g class="cloud" style="animation-duration:140s;animation-delay:-60s"><ellipse cx="300" cy="96" rx="38" ry="12"/><ellipse cx="320" cy="88" rx="22" ry="14"/></g>
+        </g>
+        <!-- collines -->
+        <path d="M0 230 C120 180 230 200 330 215 C450 232 560 170 700 190 C790 202 850 210 900 205 L900 330 L0 330Z" fill="#8cbf5a"/>
+        <path d="M0 260 C150 236 300 250 450 258 C600 266 760 240 900 250 L900 330 L0 330Z" fill="#6d9b45"/>
+        <!-- arbre -->
+        <g transform="translate(110 150)"><rect x="-7" y="40" width="14" height="80" fill="#7a4a26"/><circle cx="0" cy="30" r="44" fill="#4f7c33"/><circle cx="-26" cy="50" r="28" fill="#5f8f3d"/><circle cx="26" cy="48" r="30" fill="#5f8f3d"/></g>
+        <!-- clôture -->
+        <g fill="#e9d7b0" stroke="#a88a5a" stroke-width="1.5">
+          <rect x="600" y="236" width="300" height="7" rx="2"/><rect x="600" y="256" width="300" height="7" rx="2"/>
+          <path d="M610 225 l7 -8 l7 8 v50 h-14z M650 225 l7 -8 l7 8 v50 h-14z M690 225 l7 -8 l7 8 v50 h-14z M730 225 l7 -8 l7 8 v50 h-14z M770 225 l7 -8 l7 8 v50 h-14z M810 225 l7 -8 l7 8 v50 h-14z M850 225 l7 -8 l7 8 v50 h-14z"/>
+        </g>
+        <!-- poulailler -->
+        <g id="coop">
+          <rect x="300" y="120" width="270" height="150" fill="url(#planks)" stroke="#5a3216" stroke-width="3"/>
+          <path d="M280 126 L435 52 L590 126 Z" fill="#b6402f" stroke="#7a2418" stroke-width="3" stroke-linejoin="round"/>
+          <path d="M300 116 L435 60 L570 116" fill="none" stroke="#8f2d1f" stroke-width="2" opacity=".6"/>
+          <!-- fenêtre ronde -->
+          <circle cx="435" cy="98" r="16" fill="#3a2a1c" stroke="#5a3216" stroke-width="3"/>
+          <circle id="windowGlow" cx="435" cy="98" r="13" fill="#ffd36b" opacity="0"/>
+          <path d="M435 82 v32 M419 98 h32" stroke="#5a3216" stroke-width="2.5"/>
+          <g class="zz" id="zzz" opacity="0" fill="#fff4c2" font-family="Fraunces, Georgia, serif" font-weight="800">
+            <text x="452" y="84" font-size="13">z</text><text x="462" y="72" font-size="16" style="animation-delay:1s">z</text><text x="474" y="58" font-size="19" style="animation-delay:2s">Z</text>
+          </g>
+          <!-- ouverture de la porte -->
+          <rect x="400" y="166" width="70" height="94" rx="5" fill="#2a1a10" stroke="#5a3216" stroke-width="3"/>
+          <g clip-path="url(#doorClip)">
+            <rect x="404" y="170" width="62" height="86" fill="#1a100a"/>
+            <g id="henInside" opacity="0"><use href="#hen" x="408" y="196" width="54" height="48" style="color:#e8d7b8"/></g>
+            <!-- porte coulissante -->
+            <g id="door">
+              <rect x="404" y="170" width="62" height="86" fill="#c98d55" stroke="#6f3d1c" stroke-width="2"/>
+              <path d="M408 196 h54 M408 226 h54 M412 174 l46 76" stroke="#8a4f29" stroke-width="3" fill="none"/>
+            </g>
+          </g>
+          <!-- rail, crémaillère et motoréducteur -->
+          <rect x="472" y="140" width="7" height="122" fill="#9aa3a8" stroke="#5c6468" stroke-width="1"/>
+          <path d="M472 146 h7 M472 154 h7 M472 162 h7 M472 170 h7 M472 178 h7 M472 186 h7 M472 194 h7 M472 202 h7 M472 210 h7 M472 218 h7 M472 226 h7 M472 234 h7 M472 242 h7 M472 250 h7" stroke="#5c6468" stroke-width="1.2"/>
+          <rect x="462" y="128" width="30" height="20" rx="3" fill="#4b5458" stroke="#2d3235" stroke-width="1.5"/>
+          <circle cx="476" cy="138" r="5" fill="#9aa3a8"/>
+          <!-- boîtier électronique et sa LED -->
+          <rect x="330" y="146" width="52" height="40" rx="5" fill="#e9e4d8" stroke="#6b6458" stroke-width="2"/>
+          <rect x="336" y="152" width="40" height="7" rx="2" fill="#c9c2b2"/>
+          <circle id="led" cx="368" cy="172" r="5" fill="#5a2a22" stroke="#3a1a14" stroke-width="1"/>
+          <circle id="ledGlow" cx="368" cy="172" r="12" fill="#ff5a3c" opacity="0"/>
+          <path d="M342 168 h12 M342 176 h8" stroke="#8a8272" stroke-width="2" stroke-linecap="round"/>
+          <!-- rampe -->
+          <path d="M400 258 L470 258 L512 300 L440 300 Z" fill="#c98d55" stroke="#6f3d1c" stroke-width="2"/>
+          <path d="M420 266 h46 M434 280 h52 M446 292 h52" stroke="#8a4f29" stroke-width="2.5"/>
+          <!-- pieds -->
+          <rect x="306" y="268" width="10" height="34" fill="#7a4a26"/><rect x="554" y="268" width="10" height="34" fill="#7a4a26"/>
+        </g>
+        <!-- grain -->
+        <g id="grain" fill="#f2c94c" opacity="0">
+          <circle cx="560" cy="306" r="2"/><circle cx="572" cy="310" r="2"/><circle cx="586" cy="304" r="2"/><circle cx="240" cy="308" r="2"/><circle cx="226" cy="312" r="2"/><circle cx="256" cy="314" r="2"/>
+        </g>
+        <!-- poules dehors -->
+        <g id="hensOut" opacity="0">
+          <g class="hen" id="hen1"><use href="#hen" x="190" y="262" width="68" height="60" style="color:#c46a2c"/></g>
+          <g class="hen" id="hen2" style="--d:1.3s"><use href="#hen" x="540" y="270" width="62" height="54" style="color:#f4ece0"/></g>
+          <g class="hen" id="hen3"><use href="#hen" x="640" y="284" width="56" height="50" style="color:#3b3330"/></g>
+        </g>
+        <!-- poule sous la porte (obstacle) -->
+        <g id="henBlock" opacity="0"><use href="#hen" x="396" y="236" width="56" height="50" style="color:#f4ece0"/></g>
+      </svg>
+      <div class="caption">
+        <span class="chip" id="sceneMsg">Branchez la carte pour voir le poulailler.</span>
+        <span class="chip" id="sceneClock" hidden></span>
+        <span class="chip" id="sceneLed" hidden></span>
+      </div>
+    </div>
+
+    <div class="tiles" aria-live="polite">
+      <div class="tile" id="tl-door"><span class="ico"><svg aria-hidden="true"><use href="#ic-door"/></svg></span><span class="lbl">Porte</span><span class="val">—</span><span class="sub">non connecté</span></div>
+      <div class="tile" id="tl-mode"><span class="ico"><svg aria-hidden="true"><use href="#ic-switch"/></svg></span><span class="lbl">Sélecteur</span><span class="val">—</span><span class="sub">non connecté</span></div>
+      <div class="tile" id="tl-next"><span class="ico"><svg aria-hidden="true"><use href="#ic-clock"/></svg></span><span class="lbl">Prochain</span><span class="val">—</span><span class="sub">non connecté</span></div>
+      <div class="tile" id="tl-batt"><span class="ico"><svg aria-hidden="true"><use href="#ic-bolt"/></svg></span><span class="lbl">Batterie</span><span class="val">—</span><span class="sub">non connecté</span></div>
+    </div>
+
+    <nav role="tablist">
+      <button role="tab" data-tab="dash" aria-selected="true">Tableau de bord</button>
+      <button role="tab" data-tab="time">Heure</button>
+      <button role="tab" data-tab="set">Horaires</button>
+      <button role="tab" data-tab="sun">Soleil</button>
+      <button role="tab" data-tab="motor">Essai moteur</button>
+      <button role="tab" data-tab="log">Journal</button>
+      <button role="tab" data-tab="term">Terminal</button>
+    </nav>
+
+    <section class="tab on" id="tab-dash">
+      <div class="cards">
+        <div class="card">
+          <h3><svg><use href="#ic-door"/></svg>La porte</h3>
+          <dl>
+            <dt>Porte</dt><dd id="d-pos">—</dd>
+            <dt>Sélecteur</dt><dd id="d-mode">—</dd>
+            <dt>État</dt><dd id="d-st">—</dd>
+            <dt>Défaut verrouillé</dt><dd id="d-fault">—</dd>
+            <dt>Voyant</dt><dd id="d-led">—</dd>
+          </dl>
+        </div>
+        <div class="card">
+          <h3><svg><use href="#ic-sun"/></svg>La journée des poules</h3>
+          <div class="timeline" id="timeline"><div class="now"></div></div>
+          <div class="tl-labels"><span>minuit</span><span>midi</span><span>minuit</span></div>
+          <dl style="margin-top:8px">
+            <dt>Ouverture</dt><dd id="d-open">—</dd>
+            <dt>Fermeture</dt><dd id="d-close">—</dd>
+            <dt>Prochain changement</dt><dd id="d-next">—</dd>
+            <dt>Décalages</dt><dd id="d-offsets">—</dd>
+          </dl>
+        </div>
+        <div class="card">
+          <h3><svg><use href="#ic-bolt"/></svg>Batterie et moteur</h3>
+          <div class="batt"><div class="shell"><div class="fill" id="battFill"></div></div><b id="d-batt">—</b></div>
+          <dl style="margin-top:10px">
+            <dt>Courant moteur</dt><dd id="d-i">—</dd>
+            <dt>Depuis le redémarrage</dt><dd id="d-up">—</dd>
+          </dl>
+        </div>
+        <div class="card">
+          <h3><svg><use href="#ic-egg"/></svg>L'horloge</h3>
+          <dl>
+            <dt>Heure de la carte</dt><dd id="d-clock">—</dd>
+            <dt>Écart avec le PC</dt><dd id="d-drift">—</dd>
+            <dt>Horloge</dt><dd id="d-rtc">—</dd>
+            <dt>Dernière réponse</dt><dd id="d-age">—</dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab" id="tab-time">
+      <h2>L'heure du poulailler</h2>
+      <dl>
+        <dt>Carte (heure légale)</dt><dd id="t-board">—</dd>
+        <dt>PC (heure légale)</dt><dd id="t-pc">—</dd>
+        <dt>Écart</dt><dd id="t-drift">—</dd>
+        <dt>Carte (UTC)</dt><dd id="t-utc">—</dd>
+      </dl>
+      <div class="row"><button id="setTimeBtn" class="big primary">Mettre la carte à l'heure du PC</button></div>
+      <p class="note">Acceptée seulement avec le sélecteur sur Arrêt/Réglage. L'heure part en UTC au top d'une seconde ;
+        le passage heure d'été / heure d'hiver se fait tout seul.</p>
+      <p class="note">Sans PC : en Arrêt/Réglage, maintenir Ouvrir 3 s au top d'une heure ronde recale la carte sur
+        cette heure (±29 min).</p>
+    </section>
+
+    <section class="tab" id="tab-set">
+      <h2>Horaires de la porte</h2>
+      <p class="note" style="margin-top:0">La porte suit le soleil d'Arleuf. Les décalages ajoutent un peu de temps
+        après le lever et après le coucher, pour laisser les retardataires rentrer.</p>
+      <div class="row"><label for="offO" style="min-width:290px;font-weight:700">Ouverture : minutes après le lever</label>
+        <input id="offO" type="number" min="-60" max="120" step="5" value="0" style="width:96px"> min</div>
+      <div class="row"><label for="offC" style="min-width:290px;font-weight:700">Fermeture : minutes après le coucher</label>
+        <input id="offC" type="number" min="-60" max="120" step="5" value="30" style="width:96px"> min</div>
+      <div class="row"><button id="offReadBtn">Lire la carte</button><button id="offSendBtn" class="primary">Envoyer à la carte</button></div>
+      <p id="sched" style="font-weight:800;font-family:var(--title)"></p>
+      <p class="note">De −60 à +120 min par pas de 5 min. Envoi accepté en Arrêt/Réglage seulement ; les valeurs
+        sont enregistrées dans la carte. Un potentiomètre reprend la main s'il est tourné en Arrêt/Réglage.</p>
+    </section>
+
+    <section class="tab" id="tab-sun">
+      <div class="sun-head">
+        <h2>Le soleil d'Arleuf</h2>
+        <div class="seg" id="sunMode" role="group" aria-label="Période">
+          <button type="button" data-v="year" aria-pressed="true">Année</button><button type="button" data-v="month" aria-pressed="false">Mois</button>
+        </div>
+        <div class="period">
+          <button type="button" id="sunPrev" aria-label="Période précédente">◀</button><b id="sunPeriod">—</b>
+          <button type="button" id="sunNext" aria-label="Période suivante">▶</button><button type="button" id="sunToday">Aujourd'hui</button>
+        </div>
+        <label><input type="checkbox" id="sunUtc"> Heures UTC</label>
+      </div>
+      <p class="note" id="sunOffsets" style="margin:0 0 10px"></p>
+      <div class="kpis" id="sunKpis"></div>
+      <div class="sun-chart">
+        <canvas id="sunPlot" aria-label="Lever et coucher du soleil, ouverture et fermeture de la porte"></canvas>
+        <div class="tip" id="sunTip" hidden></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--sky)"></i>jour</span><span><i style="background:var(--night)"></i>nuit</span>
+        <span><i style="background:var(--meadow);opacity:.65"></i>porte ouverte</span><span><i style="background:var(--open)"></i>ouverture</span>
+        <span><i style="background:var(--close)"></i>fermeture</span><span><i style="background:var(--sun)"></i>lever, coucher</span>
+        <span><i style="background:var(--barn)"></i>aujourd'hui</span>
+      </div>
+      <p id="sunCheck" class="note"></p>
+      <div class="table-wrap"><table><thead id="sunHead"></thead><tbody id="sunBody"></tbody></table></div>
+      <p class="note" style="font-size:13px;margin-bottom:0">Table de la carte (<code>firmware/src/app/sun_table_data.c</code>) : lever et
+        coucher à Arleuf, moyennés sur 2025–2028, un point par semaine interpolé jour par jour, exactement comme la carte.
+        En vue annuelle, un clic sur le graphique ouvre le mois.</p>
+    </section>
+
+    <section class="tab" id="tab-motor">
+      <h2>Essai du moteur</h2>
+      <div class="row">
+        <button id="mClose" class="big wood">◀ Fermer (maintenir)</button>
+        <button id="mOpen" class="big wood">Ouvrir (maintenir) ▶</button>
+        <span style="flex:1"></span>
+        <button id="plotClear">Effacer la courbe</button>
+      </div>
+      <div class="stats">
+        <span class="muted">État : <b id="m-st">—</b></span>
+        <span class="muted">Durée : <b id="m-t">—</b></span>
+        <span class="muted">Courant : <b id="m-i">—</b></span>
+        <span class="muted">Maximum : <b id="m-imax">—</b></span>
+      </div>
+      <p id="m-result" class="note" style="margin:0 0 8px">Sélecteur sur Arrêt/Réglage, puis maintenir un bouton
+        (souris, doigt, ou touches ← et →). Le moteur s'arrête dès qu'on relâche.</p>
+      <canvas id="plot"></canvas>
+    </section>
+
+    <section class="tab" id="tab-log">
+      <h2>Le carnet du poulailler</h2>
+      <div class="cards">
+        <div>
+          <table><thead><tr><th>N°</th><th>Événement (du plus récent au plus ancien)</th></tr></thead>
+            <tbody id="logBody"><tr><td colspan="2" class="muted">—</td></tr></tbody></table>
+        </div>
+        <div class="card">
+          <h3>Compteurs depuis le dernier effacement</h3>
+          <dl id="counters"></dl>
+        </div>
+      </div>
+      <div class="row"><button id="logReadBtn">Actualiser</button><button id="logClearBtn">Effacer le journal…</button></div>
+    </section>
+
+    <section class="tab" id="tab-term">
+      <h2>Terminal</h2>
+      <div id="term"></div>
+      <div class="row" style="margin-bottom:0">
+        <input id="termIn" type="text" placeholder="Commande, par ex. S?" style="flex:1;min-width:200px;font-family:var(--mono)">
+        <button id="termSend">Envoyer</button>
+        <label><input id="tracePolls" type="checkbox"> Afficher les interrogations périodiques</label>
+      </div>
+    </section>
+  </div>
+
+  <aside id="simPanel">
+    <div class="board">
+      <h2>Poulailler virtuel</h2>
+      <div class="muted">Sélecteur</div>
+      <label><input type="radio" name="simMode" value="MANUAL"> Manuel</label>
+      <label><input type="radio" name="simMode" value="STOP" checked> Arrêt/Réglage</label>
+      <label><input type="radio" name="simMode" value="AUTO"> Automatique</label>
+      <label><input type="radio" name="simMode" value="INVALID"> Incohérent</label>
+      <div class="muted" style="margin-top:12px">Batterie : <b id="simVbatLbl">12,65 V</b></div>
+      <input id="simVbat" type="range" min="11" max="13.5" step="0.01" value="12.65">
+      <button id="simRtc">Retirer la pile de l'horloge</button>
+      <button id="simObst">Une poule sous la porte</button>
+      <p class="note" style="font-size:13px">La porte simulée met 26 s à faire sa course.</p>
+    </div>
+  </aside>
+</main>
+<footer>
+  <span id="status">Non connecté.</span>
+</footer>
+<div class="grass" aria-hidden="true"></div>
+<script>
+"use strict";
+// ======================================================================
+// Constantes (ppm_link.py, app_config.h)
+// ======================================================================
+const BAUD = 9600, REPLY_TIMEOUT_MS = 1000, WAKE_AFTER_IDLE_MS = 1000, WAKE_DELAY_MS = 100;
+// Bluetooth : le module ajoute sa latence (intervalle de connexion, 9600 bauds de son côté)
+const BLE_REPLY_TIMEOUT_MS = 2500, BLE_WAKE_DELAY_MS = 300, BLE_CHUNK = 20;
+const POLL_MS = 1000, MOTOR_REPEAT_MS = 100, PLOT_T_MAX_S = 20, PLOT_I_MAX_MA = 1200;
+const STALL_OPEN_MA = 600, STALL_CLOSE_MA = 400, ILIM_MA = 1050;
+const OFFSET_MIN = -60, OFFSET_MAX = 120, OFFSET_STEP = 5;
+
+const MODE_FR = {UNKNOWN: "inconnu", STOP: "Arrêt / Réglage", MANUAL: "Manuel", AUTO: "Automatique", INVALID: "incohérent (câblage)"};
+const STATE_FR = {INIT: "initialisation", IDLE_STOP: "repos (Arrêt/Réglage)", IDLE_MANUAL: "repos (Manuel)",
+  IDLE_AUTO: "repos (Automatique)", OPENING: "ouverture", CLOSING: "fermeture", CLEARING: "dégagement (réouverture)",
+  FAULT: "défaut verrouillé", TEST: "essai moteur"};
+const POS_FR = {UNKNOWN: "inconnue", OPEN: "ouverte", CLOSED: "fermée"};
+const BATT_FR = {UNKNOWN: "pas encore mesurée", OK: "normale", LOW: "basse", CRITICAL: "critique"};
+const FAULT_FR = {NONE: "aucun", JAM_OPEN: "coincements répétés à l'ouverture", OBSTACLE: "obstacles répétés à la fermeture",
+  TIMEOUT: "limite de durée sans butée", NO_CURRENT: "moteur commandé sans courant", WDT: "resets watchdog répétés"};
+const EVENT_FR = {LATE_ENDSTOP: "butée atteinte après la fenêtre", JAM_OPEN: "coincement à l'ouverture",
+  OBSTACLE: "obstacle à la fermeture", TIMEOUT: "limite de durée sans butée", NO_CURRENT: "moteur sans courant",
+  WDT_RESET: "reset par le watchdog", QUEUE_OVERFLOW: "file d'événements pleine"};
+const COUNTER_FR = {late: "Butées tardives", jam: "Coincements à l'ouverture", obst: "Obstacles à la fermeture",
+  tmo: "Limites de durée", nocur: "Moteur sans courant", wdt: "Resets watchdog", ovf: "Débordements de file"};
+const LED_FR = {0: "rien à signaler", 1: "batterie basse", 2: "batterie critique", 3: "horloge invalide",
+  4: "sélecteur ou inverseur incohérent", 5: "défaut : coincements à l'ouverture", 6: "défaut : obstacles à la fermeture",
+  7: "défaut : limite de durée", 8: "défaut : moteur sans courant", 9: "défaut : resets watchdog"};
+const MOTOR_ST_FR = {RUN: "en marche", STOP: "arrêté", STALL: "blocage détecté", TIMEOUT: "limite de durée", NO_CURRENT: "moteur sans courant"};
+
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const pad = n => String(n).padStart(2, "0");
+const fmtOffset = v => (v >= 0 ? "+" : "") + v;
+const offsetValid = v => Number.isInteger(v) && v >= OFFSET_MIN && v <= OFFSET_MAX && v % OFFSET_STEP === 0;
+const comma = s => s.replace(".", ",");
+
+class LinkError extends Error {}
+
+// ======================================================================
+// Analyse des réponses
+// ======================================================================
+function parseKV(reply, prefix) {
+  const parts = reply.trim().split(/\s+/);
+  if (parts[0] !== prefix) return null;
+  const out = {};
+  for (const p of parts.slice(1)) { const k = p.indexOf("="); if (k > 0) out[p.slice(0, k)] = p.slice(k + 1); }
+  return out;
+}
+function parseTime(reply) {
+  const m = /^OK (\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)$/.exec(reply.trim());
+  return m ? new Date(Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6])) : null;
+}
+function parseOffsets(reply) {
+  const p = reply.trim().split(/\s+/);
+  if (p.length !== 3 || (p[0] !== "O" && p[0] !== "OK")) return null;
+  const a = parseInt(p[1], 10), b = parseInt(p[2], 10);
+  return Number.isNaN(a) || Number.isNaN(b) ? null : [a, b];
+}
+function parseLog(reply) {
+  if (reply === "L") return [];
+  if (!reply.startsWith("L ")) return null;
+  return reply.slice(2).trim().split(",").filter(Boolean);
+}
+function timeCommand(d) {
+  return `T ${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+         `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+function utcHHMMToLocal(hhmm, dayUtc) {
+  const m = /^(\d\d):(\d\d)$/.exec(hhmm || "");
+  if (!m) return hhmm;
+  const d = new Date(Date.UTC(dayUtc.getUTCFullYear(), dayUtc.getUTCMonth(), dayUtc.getUTCDate(), +m[1], +m[2]));
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+const fmtLocal = d => `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const fmtUTC = d => `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} UTC`;
+
+// ======================================================================
+// Liaisons avec la carte : découpage en lignes, réveil, une réponse par commande
+// ======================================================================
+class LineLink {
+  constructor(replyTimeoutMs, wakeDelayMs) {
+    this.replyTimeoutMs = replyTimeoutMs; this.wakeDelayMs = wakeDelayMs;
+    this.lines = []; this.waiter = null; this.buf = ""; this.last = 0; this.closed = false;
+  }
+  _feed(text) {
+    this.buf += text;
+    let k;
+    while ((k = this.buf.search(/[\r\n]/)) >= 0) {
+      const line = this.buf.slice(0, k).trim();
+      this.buf = this.buf.slice(k + 1);
+      if (!line) continue;
+      if (this.waiter) { const w = this.waiter; this.waiter = null; w(line); } else this.lines.push(line);
+    }
+  }
+  _nextLine(timeoutMs) {
+    if (this.lines.length) return Promise.resolve(this.lines.shift());
+    return new Promise(resolve => {
+      const t = setTimeout(() => { this.waiter = null; resolve(null); }, timeoutMs);
+      this.waiter = line => { clearTimeout(t); resolve(line); };
+    });
+  }
+  async exchange(line) {
+    if (this.closed) throw new LinkError("liaison fermée");
+    if (performance.now() - this.last > WAKE_AFTER_IDLE_MS) {
+      await this._write("\r\n");            // réveil : ce caractère peut être perdu
+      await sleep(this.wakeDelayMs);
+    }
+    this.lines = []; this.buf = "";
+    await this._write(line + "\r\n");
+    const reply = await this._nextLine(this.replyTimeoutMs);
+    if (reply === null) throw new LinkError("pas de réponse de la carte");
+    this.last = performance.now();
+    return reply;
+  }
+}
+
+// ---------------------------------------------------------------- port série (Web Serial)
+class SerialLink extends LineLink {
+  static async open() {
+    const port = await navigator.serial.requestPort();
+    await port.open({baudRate: BAUD, dataBits: 8, parity: "none", stopBits: 1, flowControl: "none"});
+    const link = new SerialLink(port);
+    link._readLoop();
+    return link;
+  }
+  constructor(port) {
+    super(REPLY_TIMEOUT_MS, WAKE_DELAY_MS);
+    this.port = port; this.writer = port.writable.getWriter(); this.reader = null;
+    this.lostHint = "Adaptateur débranché ?";
+    const info = port.getInfo ? port.getInfo() : {};
+    this.name = info.usbVendorId === 0x0403 ? "adaptateur FTDI (USB-série)" :
+                info.usbVendorId ? `port USB ${info.usbVendorId.toString(16)}:${(info.usbProductId || 0).toString(16)}` : "port série";
+  }
+  async _readLoop() {
+    const dec = new TextDecoder("ascii");
+    while (!this.closed && this.port.readable) {
+      this.reader = this.port.readable.getReader();
+      try {
+        for (;;) {
+          const {value, done} = await this.reader.read();
+          if (done) break;
+          this._feed(dec.decode(value, {stream: true}));
+        }
+      } catch (e) { if (!this.closed) app.onLinkLost(e); }
+      finally { try { this.reader.releaseLock(); } catch (_) {} }
+      if (!this.closed) break;
+    }
+  }
+  async _write(text) { await this.writer.write(new TextEncoder().encode(text)); }
+  async close() {
+    this.closed = true;
+    try { await this.reader?.cancel(); } catch (_) {}
+    try { this.writer.releaseLock(); } catch (_) {}
+    try { await this.port.close(); } catch (_) {}
+  }
+}
+
+// ---------------------------------------------------------------- Bluetooth (Web Bluetooth)
+// Module BLE « UART transparent » branché sur J4 : HM-10 et ses clones (service FFE0, caractéristique FFE1
+// qui notifie et accepte l'écriture), ou tout module au service UART de Nordic.
+const BLE_SERVICES = [0xffe0, "6e400001-b5a3-f393-e0a9-e50e24dcca9e"];
+const BLE_NAMES = ["HM", "BT05", "MLT", "CC41", "JDY", "DSD", "Poul"];   // noms d'usine courants, ou renommé « Poul… »
+
+class BleLink extends LineLink {
+  static async open() {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [...BLE_SERVICES.map(u => ({services: [u]})), ...BLE_NAMES.map(p => ({namePrefix: p}))],
+      optionalServices: BLE_SERVICES});
+    app.setStatus(`Connexion à ${device.name || "un module Bluetooth"}…`);
+    try {
+      const server = await device.gatt.connect();
+      for (const uuid of BLE_SERVICES) {
+        let service;
+        try { service = await server.getPrimaryService(uuid); } catch (_) { continue; }
+        // Réception : la caractéristique qui notifie ; émission : la même si elle accepte l'écriture
+        // (HM-10), sinon la première qui l'accepte (Nordic, quelques clones)
+        const chars = await service.getCharacteristics();
+        const canWrite = c => c.properties.write || c.properties.writeWithoutResponse;
+        const rx = chars.find(c => c.properties.notify || c.properties.indicate);
+        const tx = rx && canWrite(rx) ? rx : chars.find(canWrite);
+        if (!rx || !tx) continue;
+        const link = new BleLink(device, rx, tx);
+        await link._start();
+        return link;
+      }
+      throw new LinkError(`${device.name || "ce module"} n'offre pas de liaison série (service FFE0 du HM-10)`);
+    } catch (e) {
+      try { device.gatt.disconnect(); } catch (_) {}
+      throw e;
+    }
+  }
+  constructor(device, rx, tx) {
+    super(BLE_REPLY_TIMEOUT_MS, BLE_WAKE_DELAY_MS);
+    this.device = device; this.rx = rx; this.tx = tx;
+    this.name = `Bluetooth ${device.name || ""}`.trim();
+    this.lostHint = "Module Bluetooth hors de portée ou sans alimentation ?";
+    this.noAck = tx.properties.writeWithoutResponse && typeof tx.writeValueWithoutResponse === "function";
+    const dec = new TextDecoder("ascii");
+    this._onNotify = e => this._feed(dec.decode(e.target.value, {stream: true}));
+    this._onGone = () => { if (!this.closed) { this.closed = true; app.onLinkLost(new LinkError("liaison Bluetooth coupée")); } };
+  }
+  async _start() {
+    this.rx.addEventListener("characteristicvaluechanged", this._onNotify);
+    this.device.addEventListener("gattserverdisconnected", this._onGone);
+    await this.rx.startNotifications();
+  }
+  async _write(text) {
+    const bytes = new TextEncoder().encode(text);
+    for (let i = 0; i < bytes.length; i += BLE_CHUNK) {    // 20 octets par paquet (MTU par défaut du HM-10)
+      const part = bytes.slice(i, i + BLE_CHUNK);
+      if (this.noAck) await this.tx.writeValueWithoutResponse(part); else await this.tx.writeValue(part);
+    }
+  }
+  async close() {
+    this.closed = true;
+    this.device.removeEventListener("gattserverdisconnected", this._onGone);
+    try { await this.rx.stopNotifications(); } catch (_) {}
+    try { this.device.gatt.disconnect(); } catch (_) {}
+  }
+}
+
+// ======================================================================
+// Carte virtuelle (portage de ppm_sim.py)
+// ======================================================================
+// ======================================================================
+// Table solaire de la carte : copie de firmware/src/app/sun_table_data.c (générée par
+// firmware/tools/gen_sun_table.py ; test_ppm_tools.py vérifie que les deux sont identiques).
+// Lever et coucher à Arleuf en minutes UTC, un point tous les 7 jours (jours 1, 8, …, 365).
+// ======================================================================
+const SUN_STEP = 7;
+// TABLE SOLAIRE DEBUT
+const SUN_RISE = [450, 449, 446, 440, 433, 424, 414, 402, 390, 376, 363, 349, 335, 321, 307, 294, 282, 270, 259, 250,
+  242, 235, 231, 229, 228, 230, 233, 238, 245, 252, 261, 269, 278, 288, 297, 306, 315, 324, 333, 343, 352, 362, 372, 382,
+  393, 403, 413, 423, 431, 439, 445, 448, 450];
+const SUN_SET = [965, 973, 981, 991, 1002, 1012, 1023, 1034, 1045, 1055, 1065, 1075, 1085, 1095, 1104, 1114, 1124, 1133,
+  1143, 1152, 1160, 1168, 1174, 1179, 1182, 1183, 1182, 1179, 1175, 1168, 1159, 1149, 1138, 1126, 1113, 1100, 1086, 1072,
+  1058, 1044, 1030, 1017, 1004, 992, 982, 973, 965, 959, 956, 954, 956, 959, 964];
+// TABLE SOLAIRE FIN
+const DAYS_BEFORE_MONTH = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+// Mêmes calculs que la carte : calendar_sun_day(), sun_table_get(), schedule_event_min()
+const sunDayOf = (m, d) => (m === 1 && d === 29) ? 59 : DAYS_BEFORE_MONTH[m] + d;          // m : 0 = janvier
+const sunInterp = (a, b, f) => b >= a ? a + Math.floor(((b - a) * f + 3) / SUN_STEP) : a - Math.floor(((a - b) * f + 3) / SUN_STEP);
+function sunTable(day) {
+  day = Math.min(Math.max(day, 1), 365);
+  const i = Math.floor((day - 1) / SUN_STEP), f = (day - 1) % SUN_STEP;
+  return f === 0 ? {rise: SUN_RISE[i], set: SUN_SET[i]}
+                 : {rise: sunInterp(SUN_RISE[i], SUN_RISE[i + 1], f), set: sunInterp(SUN_SET[i], SUN_SET[i + 1], f)};
+}
+const sunUTC = d => sunTable(sunDayOf(d.getUTCMonth(), d.getUTCDate()));                     // d : instant (Date)
+const eventMin = (sunMin, offset) => Math.min(Math.max(sunMin + offset, 0), 1439);
+
+const SIM = {BATT_LOW_MV: 12200, BATT_CRITICAL_MV: 11900, BATT_HYST_MV: 200, STALL_CONFIRM_S: 0.1, INRUSH_S: 0.3,
+  MOVE_TIMEOUT_S: 18, HEARTBEAT_S: 0.3, TRAVEL_S: 26, RUN_MA: 260, INRUSH_MA: 820, LOG_SIZE: 16};
+const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+const nowS = () => performance.now() / 1000;
+
+class SimBoard {
+  constructor() {
+    this.t0 = nowS(); this.rtcDeltaMs = -3 * 60e3; this.rtcValid = true; this.mode = "STOP"; this.vbat = 12650;
+    this.batt = "OK"; this.offsets = [0, 30]; this.pos = "CLOSED"; this.doorX = 0; this.fault = "NONE"; this.log = [];
+    this.counts = {late: 0, jam: 0, obst: 0, tmo: 0, nocur: 0, wdt: 0, ovf: 0};
+    this.injectObstacle = false; this.autoMove = null; this.test = null; this.current = 0;
+  }
+  nowUtc() { return new Date(Date.now() + this.rtcDeltaMs); }
+  schedule() {
+    const now = this.nowUtc();
+    const sun = sunUTC(now), o = eventMin(sun.rise, this.offsets[0]), c = eventMin(sun.set, this.offsets[1]);
+    const m = now.getUTCHours() * 60 + now.getUTCMinutes();
+    let nxt;
+    if (o < c && m < o) nxt = o; else if (o < c && m < c) nxt = c;
+    else nxt = eventMin(sunUTC(new Date(now.getTime() + 864e5)).rise, this.offsets[0]);
+    return [o, c, nxt];
+  }
+  target() { const [o, c] = this.schedule(), n = this.nowUtc(), m = n.getUTCHours() * 60 + n.getUTCMinutes(); return o <= m && m < c ? "OPEN" : "CLOSED"; }
+  updateBattery() {
+    const v = this.vbat, S = SIM; let b = this.batt;
+    if (v < S.BATT_CRITICAL_MV) b = "CRITICAL";
+    else if (b === "CRITICAL" && v >= S.BATT_LOW_MV + S.BATT_HYST_MV) b = "OK";
+    else if (b === "CRITICAL" && v >= S.BATT_CRITICAL_MV + S.BATT_HYST_MV) b = "LOW";
+    else if ((b === "OK" || b === "UNKNOWN") && v < S.BATT_LOW_MV) b = "LOW";
+    else if (b === "LOW" && v >= S.BATT_LOW_MV + S.BATT_HYST_MV) b = "OK";
+    else if (b === "UNKNOWN") b = "OK";
+    this.batt = b;
+  }
+  ledCode() {
+    const codes = {JAM_OPEN: 5, OBSTACLE: 6, TIMEOUT: 7, NO_CURRENT: 8, WDT: 9};
+    if (this.fault !== "NONE") return codes[this.fault];
+    if (this.mode === "INVALID") return 4;
+    if (!this.rtcValid) return 3;
+    return {CRITICAL: 2, LOW: 1}[this.batt] || 0;
+  }
+  state() {
+    if (this.fault !== "NONE") return "FAULT";
+    if (this.test && this.test.st === "RUN") return "TEST";
+    if (this.autoMove) return this.autoMove.d === "O" ? "OPENING" : "CLOSING";
+    return {STOP: "IDLE_STOP", MANUAL: "IDLE_MANUAL", AUTO: "IDLE_AUTO"}[this.mode] || "IDLE_STOP";
+  }
+  addLog(ev, cnt) { this.log.unshift(ev); this.log.length = Math.min(this.log.length, SIM.LOG_SIZE); this.counts[cnt]++; }
+  step() {
+    this.updateBattery();
+    const now = nowS();
+    if (this.mode !== "STOP" && this.test) { this.test = null; this.current = 0; this.pos = "UNKNOWN"; }
+    if (this.test) this.stepTest(now);
+    if (this.mode !== "AUTO") { this.autoMove = null; if (!this.test) this.current = 0; return; }
+    if (!this.autoMove && this.fault === "NONE" && this.rtcValid) {
+      const tgt = this.target();
+      if (this.pos !== tgt && !(this.batt === "CRITICAL" && tgt === "OPEN")) this.autoMove = {d: tgt === "OPEN" ? "O" : "C", start: now};
+    }
+    if (this.autoMove) {
+      const {d, start} = this.autoMove, el = now - start;
+      this.current = el < SIM.INRUSH_S ? SIM.INRUSH_MA : SIM.RUN_MA + rnd(-15, 15);
+      if (d === "C" && this.injectObstacle && el > SIM.TRAVEL_S * 0.4) {
+        this.injectObstacle = false; this.addLog("OBSTACLE", "obst"); this.autoMove = {d: "O", start: now}; return;
+      }
+      if (el >= SIM.TRAVEL_S) {
+        this.pos = d === "O" ? "OPEN" : "CLOSED"; this.doorX = d === "O" ? 1 : 0; this.autoMove = null; this.current = 0;
+      }
+    }
+  }
+  stepTest(now) {
+    const t = this.test;
+    if (t.st !== "RUN") return;
+    const dtm = now - t.lastStep; t.lastStep = now;
+    const el = now - t.start;
+    if (now - t.lastCmd > SIM.HEARTBEAT_S) { this.stopTest("STOP"); return; }
+    if (el > SIM.MOVE_TIMEOUT_S) { this.stopTest("TIMEOUT"); return; }
+    const sign = t.dir === "O" ? 1 : -1;
+    this.doorX = Math.min(Math.max(this.doorX + sign * dtm / SIM.TRAVEL_S, 0), 1);
+    const atEnd = t.dir === "O" ? this.doorX >= 1 : this.doorX <= 0;
+    let i;
+    if (el < SIM.INRUSH_S) i = SIM.INRUSH_MA;
+    else if (atEnd) { t.stallT = t.stallT || now; i = Math.min(ILIM_MA, SIM.RUN_MA + Math.floor((now - t.stallT) * 4000)); }
+    else i = SIM.RUN_MA + rnd(-15, 15);
+    this.current = i; t.imax = Math.max(t.imax, i);
+    const thr = t.dir === "O" ? STALL_OPEN_MA : STALL_CLOSE_MA;
+    if (el >= SIM.INRUSH_S && i > thr) {
+      t.over = t.over || now;
+      if (now - t.over >= SIM.STALL_CONFIRM_S) { this.pos = t.dir === "O" ? "OPEN" : "CLOSED"; this.stopTest("STALL", true); }
+    } else t.over = null;
+  }
+  stopTest(st, keepPos) {
+    this.test.st = st; this.test.latched = st === "STALL" || st === "TIMEOUT"; this.current = 0;
+    if (!keepPos) this.pos = "UNKNOWN";
+  }
+  handle(line) {
+    this.step();
+    line = line.trim();
+    if (!line) return "";
+    const up = line.toUpperCase();
+    const fmtT = d => timeCommand(d).replace(/^T /, "OK ");
+    if (up === "T?") return this.rtcValid ? fmtT(this.nowUtc()) : "ERR RTC";
+    if (up.startsWith("T ")) {
+      if (this.mode !== "STOP") return "ERR MODE";
+      const t = parseTime("OK " + line.slice(2).trim());
+      if (!t || t.getUTCFullYear() < 2000 || t.getUTCFullYear() > 2099) return "ERR";
+      this.rtcDeltaMs = t.getTime() - Date.now(); this.rtcValid = true;
+      return fmtT(t);
+    }
+    if (up === "S?") return this.status();
+    if (up === "L?") return this.log.length ? "L " + this.log.join(",") : "L";
+    if (up === "N?") return "N " + Object.entries(this.counts).map(([k, v]) => `${k}=${v}`).join(" ");
+    if (up === "LC") {
+      if (this.mode !== "STOP") return "ERR MODE";
+      this.log = []; for (const k in this.counts) this.counts[k] = 0; return "OK";
+    }
+    if (up === "O?") return "O " + this.offsets.map(fmtOffset).join(" ");
+    if (up.startsWith("O ")) {
+      if (this.mode !== "STOP") return "ERR MODE";
+      const v = parseOffsets(line);
+      if (!v || !v.every(offsetValid)) return "ERR";
+      this.offsets = v; return "OK " + v.map(fmtOffset).join(" ");
+    }
+    if (up === "M O" || up === "M C" || up === "M 0") return this.motor(up[2]);
+    return "ERR";
+  }
+  status() {
+    const [o, c, n] = this.schedule();
+    const hm = m => this.rtcValid ? `${pad(Math.floor(m / 60))}:${pad(m % 60)}` : "--:--";
+    return `S mode=${this.mode} st=${this.state()} pos=${this.pos} rtc=${this.rtcValid ? 1 : 0} vbat=${this.vbat} ` +
+      `batt=${this.batt} i=${this.current} led=${this.ledCode()} fault=${this.fault} oo=${fmtOffset(this.offsets[0])} ` +
+      `oc=${fmtOffset(this.offsets[1])} open=${hm(o)} close=${hm(c)} next=${hm(n)} up=${Math.floor(nowS() - this.t0)}`;
+  }
+  motor(d) {
+    if (this.mode !== "STOP" || this.fault !== "NONE") return "ERR MODE";
+    const now = nowS();
+    let t = this.test;
+    if (d === "0") {
+      if (t && t.st === "RUN") this.stopTest("STOP");
+      if (t) t.latched = false;
+    } else if (t && t.latched && t.dir === d) {
+      /* après blocage ou limite : relâcher d'abord */
+    } else if (!t || t.st !== "RUN" || t.dir !== d) {
+      this.test = t = {dir: d, start: now, lastCmd: now, lastStep: now, imax: 0, st: "RUN"};
+    } else t.lastCmd = now;
+    if (!t) return "M dir=0 t=0 i=0 imax=0 st=STOP";
+    this.stepTest(now);
+    const reply = `M dir=${t.st === "RUN" ? t.dir : "0"} t=${Math.floor((now - t.start) * 1000)} i=${this.current} imax=${t.imax} st=${t.st}`;
+    t.imax = this.current;
+    return reply;
+  }
+}
+
+class SimLink {
+  constructor(board) { this.board = board; this.name = "Simulateur"; }
+  async exchange(line) { await sleep(Math.max(5, line.length * 1.04)); return this.board.handle(line); }
+  async close() {}
+}
+
+// ======================================================================
+// Application
+// ======================================================================
+const app = {
+  link: null, board: null, queue: Promise.resolve(), status: {}, boardTime: null, boardTimeAt: 0,
+  lastOk: 0, linkOk: false, pollBusy: false, motorDir: null, motorBusy: false, motorTimer: null, curves: [],
+
+  setStatus(text, alert = false) { const f = $("status"); f.textContent = text; f.classList.toggle("alert", alert); },
+
+  // Échanges sérialisés : une commande à la fois, comme le fil Worker de la version Python
+  exchange(line, {trace = true} = {}) {
+    const job = this.queue.then(async () => {
+      if (!this.link) throw new LinkError("pas de carte connectée");
+      try {
+        const reply = await this.link.exchange(line);
+        if (trace) this.trace(line, reply);
+        return reply;
+      } catch (e) {
+        this.trace(line, `(erreur : ${e.message})`, true);
+        throw e;
+      }
+    });
+    this.queue = job.catch(() => {});
+    return job;
+  },
+
+  check(reply, what) {
+    const msgs = {"ERR MODE": "refusé : mettre le sélecteur sur Arrêt/Réglage",
+                  "ERR RTC": "horloge de la carte invalide : la mettre à l'heure", "ERR": "commande refusée par la carte"};
+    if (reply in msgs) { this.setStatus(`${what} : ${msgs[reply]}.`, true); return false; }
+    return true;
+  },
+
+  async connect() {
+    const src = $("source").value;
+    try {
+      if (src === "sim") {
+        this.board = new SimBoard(); this.link = new SimLink(this.board);
+        $("simPanel").classList.add("on"); this.simApply();
+      } else if (src === "ble") {
+        if (!("bluetooth" in navigator)) { this.setStatus("Web Bluetooth indisponible : Chrome ou Edge sur ordinateur, Bluefy sur iPhone.", true); return; }
+        this.link = await BleLink.open();
+      } else {
+        if (!("serial" in navigator)) { this.setStatus("Web Serial indisponible : ouvrir ce fichier dans Chrome ou Edge.", true); return; }
+        this.link = await SerialLink.open();
+      }
+    } catch (e) {
+      this.link = null;
+      const msg = (e && e.message) || String(e);
+      if (e && e.name === "NotFoundError" && /cancel|select|annul/i.test(msg)) { this.setStatus(src === "ble" ? "Aucun module choisi." : "Aucun port choisi."); return; }
+      if (src === "ble" && /adapter|bluetooth.*(off|unavailable|disabled)/i.test(msg)) {
+        this.setStatus("Connexion impossible : Bluetooth absent ou éteint sur cet appareil.", true); return;
+      }
+      this.setStatus(`Connexion impossible : ${msg}`, true); return;
+    }
+    $("connBtn").textContent = "Déconnecter"; $("connBtn").classList.remove("primary");
+    $("source").disabled = true;
+    $("connInfo").textContent = `Connecté : ${this.link.name}`;
+    this.setStatus("Connecté. Interrogation de la carte…");
+    this.linkOk = false; this.boardTime = null;
+    this.readOffsets(); this.readLog();
+  },
+
+  async disconnect() {
+    this.motorRelease();
+    const l = this.link; this.link = null; this.board = null;
+    await l?.close();
+    $("simPanel").classList.remove("on");
+    $("connBtn").textContent = "Connecter"; $("connBtn").classList.add("primary");
+    $("source").disabled = false; $("connInfo").textContent = "Non connecté";
+    this.linkOk = false; this.boardTime = null; this.renderDash();
+    this.setStatus("Non connecté.");
+  },
+
+  async onLinkLost(e) {
+    const hint = this.link?.lostHint || "";
+    await this.disconnect();                // avant le message, que disconnect() remplacerait par « Non connecté. »
+    this.setStatus(`Liaison perdue : ${e.message || e}. ${hint}`.trim(), true);
+  },
+
+  // ------------------------------------------------------------------ boucle
+  tick() {
+    if (this.link && !this.pollBusy && this.motorDir === null && performance.now() - this.lastPoll >= POLL_MS) {
+      this.lastPoll = performance.now(); this.pollBusy = true;
+      const quiet = {trace: $("tracePolls").checked};
+      Promise.all([this.exchange("S?", quiet), this.exchange("T?", quiet)])
+        .then(([s, t]) => this.onStatus(s, t))
+        .catch(e => { this.linkOk = false; this.setStatus(`Liaison : ${e.message}`, true); this.renderDash(); })
+        .finally(() => { this.pollBusy = false; });
+    }
+    this.renderClock();
+    if (this.board) this.renderSim();
+  },
+  lastPoll: 0,
+
+  onStatus(sReply, tReply) {
+    const s = parseKV(sReply, "S");
+    if (!s) { this.setStatus(`Réponse d'état inattendue : ${sReply}`, true); return; }
+    const wasOk = this.linkOk;
+    this.status = s; this.linkOk = true; this.lastOk = performance.now();
+    this.boardTime = parseTime(tReply); this.boardTimeAt = performance.now();
+    if (!wasOk || $("status").classList.contains("alert") && $("status").textContent.startsWith("Liaison"))
+      this.setStatus("Carte en ligne.");
+    this.renderDash();
+  },
+
+  put(id, text, cls = "") { const e = $(id); e.textContent = text; e.className = cls; },
+
+  tile(id, state, val, sub) {
+    const t = $(id); t.dataset.s = state; t.querySelector(".val").textContent = val; t.querySelector(".sub").textContent = sub;
+  },
+  renderTiles() {
+    const s = this.linkOk ? this.status : {};
+    if (!Object.keys(s).length) {
+      const why = this.link ? "en attente de la carte" : "non connecté";
+      for (const id of ["tl-door", "tl-mode", "tl-next", "tl-batt"]) this.tile(id, "", "—", why);
+      return;
+    }
+    const moving = {OPENING: "s'ouvre…", CLOSING: "se ferme…", CLEARING: "se rouvre", TEST: "essai moteur"}[s.st];
+    const fault = s.fault && s.fault !== "NONE";
+    this.tile("tl-door", fault ? "alert" : moving ? "run" : (s.pos === "OPEN" || s.pos === "CLOSED") ? "ok" : "warn",
+      moving || POS_FR[s.pos] || "—", fault ? `défaut : ${FAULT_FR[s.fault] || s.fault}` : (STATE_FR[s.st] || ""));
+    this.tile("tl-mode", s.mode === "INVALID" ? "alert" : s.mode === "AUTO" ? "ok" : "warn", MODE_FR[s.mode] || s.mode || "—",
+      {AUTO: "la porte suit le soleil", MANUAL: "commande à la main", STOP: "réglages possibles", INVALID: "vérifier le câblage"}[s.mode] || "");
+    const b = this.boardNow(), nx = s.next;
+    if (s.rtc !== "1" || !b || !/^\d\d:\d\d$/.test(nx || "")) {
+      this.tile("tl-next", s.rtc === "1" ? "" : "alert", "—", s.rtc === "1" ? "" : "horloge à mettre à l'heure");
+    } else {
+      const [hh, mm] = nx.split(":").map(Number);
+      let t = Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate(), hh, mm);
+      if (t <= b.getTime()) t += 864e5;
+      const left = Math.max(0, Math.round((t - b.getTime()) / 60000));
+      const quand = left >= 60 ? `${Math.floor(left / 60)} h ${pad(left % 60)}` : `${left} min`;
+      this.tile("tl-next", s.mode === "AUTO" ? "ok" : "", utcHHMMToLocal(nx, new Date(t)),
+        `${nx === s.close ? "fermeture" : "ouverture"} dans ${quand}`);
+      $("tl-next").title = s.mode === "AUTO" ? "" : "La porte ne bouge seule qu'en mode Automatique.";
+    }
+    const v = parseInt(s.vbat, 10), bt = s.batt || "UNKNOWN";
+    this.tile("tl-batt", bt === "CRITICAL" ? "alert" : bt === "LOW" ? "warn" : bt === "OK" ? "ok" : "",
+      Number.isNaN(v) ? "—" : `${comma((v / 1000).toFixed(2))} V`, BATT_FR[bt] || bt);
+  },
+
+  renderDash() {
+    this.renderTiles();
+    const s = this.linkOk ? this.status : {};
+    const has = Object.keys(s).length > 0;
+    const day = this.boardTime || new Date();
+    if (!has) {
+      for (const id of ["d-mode", "d-st", "d-pos", "d-fault", "d-led", "d-batt", "d-i", "d-up", "d-rtc", "d-offsets", "d-open", "d-close", "d-next"])
+        this.put(id, "—");
+      return;
+    }
+    this.put("d-mode", MODE_FR[s.mode] || s.mode || "—", s.mode === "INVALID" ? "alert" : "");
+    this.put("d-st", STATE_FR[s.st] || s.st || "—");
+    this.put("d-pos", POS_FR[s.pos] || s.pos || "—");
+    const fault = s.fault || "NONE";
+    this.put("d-fault", FAULT_FR[fault] || fault, fault !== "NONE" ? "alert" : "ok");
+    const led = parseInt(s.led || "0", 10) || 0;
+    this.put("d-led", led ? `${led} éclat${led > 1 ? "s" : ""} — ${LED_FR[led] || "?"}` : "éteinte — rien à signaler", led ? "alert" : "ok");
+    const vbat = parseInt(s.vbat, 10), batt = s.batt || "UNKNOWN";
+    this.put("d-batt", Number.isNaN(vbat) ? "—" : `${comma((vbat / 1000).toFixed(2))} V — ${BATT_FR[batt] || batt}`,
+      batt === "LOW" || batt === "CRITICAL" ? "alert" : "");
+    this.put("d-i", `${s.i ?? "—"} mA`);
+    const up = parseInt(s.up, 10);
+    this.put("d-up", Number.isNaN(up) ? "—" : `${Math.floor(up / 86400)} j ${Math.floor(up % 86400 / 3600)} h ${Math.floor(up % 3600 / 60)} min`);
+    const rtcOk = s.rtc === "1";
+    this.put("d-rtc", rtcOk ? "valide" : "invalide : mettre à l'heure", rtcOk ? "ok" : "alert");
+    this.put("d-offsets", `ouverture ${s.oo ?? "?"} min, fermeture ${s.oc ?? "?"} min`);
+    for (const k of ["open", "close", "next"]) {
+      const v = s[k] || "--:--";
+      this.put("d-" + k, rtcOk && v !== "--:--" ? utcHHMMToLocal(v, day) : "—");
+    }
+    $("sched").textContent = rtcOk ? `Aujourd'hui (selon la carte) : ouverture à ${$("d-open").textContent}, fermeture à ${$("d-close").textContent} (heure légale)` : "";
+  },
+
+  boardNow() {
+    // L'heure de la carte n'est extrapolée que tant que la carte répond (pas d'heure « fantôme »).
+    if (!this.boardTime || !this.linkOk) return null;
+    return new Date(this.boardTime.getTime() + (performance.now() - this.boardTimeAt));
+  },
+
+  renderClock() {
+    const pc = new Date();
+    $("t-pc").textContent = fmtLocal(pc);
+    const age = this.linkOk ? Math.round((performance.now() - this.lastOk) / 1000) : null;
+    this.put("d-age", !this.link ? "—" : age === null ? "pas de réponse" : age <= 2 ? "à l'instant" : `il y a ${age} s`,
+      this.link && (age === null || age > 5) ? "alert" : "");
+    const b = this.boardNow();
+    if (!b) { for (const id of ["t-board", "t-utc", "t-drift", "d-clock", "d-drift"]) this.put(id, "—"); return; }
+    const drift = (b - pc) / 1000;
+    const txt = Math.abs(drift) < 1.5 ? "à l'heure" : `${Math.abs(drift).toFixed(0)} s ${drift > 0 ? "en avance" : "en retard"}`;
+    const cls = Math.abs(drift) < 60 ? "ok" : "alert";
+    this.put("t-board", fmtLocal(b)); this.put("t-utc", fmtUTC(b));
+    this.put("t-drift", txt, cls); this.put("d-drift", txt, cls);
+    this.put("d-clock", `${pad(b.getHours())}:${pad(b.getMinutes())}:${pad(b.getSeconds())}`);
+  },
+
+  // ------------------------------------------------------------------ terminal
+  trace(line, reply, err = false) {
+    if (!$("tracePolls").checked && this.motorDir !== null && line.startsWith("M ")) return;
+    const term = $("term"), n = new Date();
+    const t = `${pad(n.getHours())}:${pad(n.getMinutes())}:${pad(n.getSeconds())}`;
+    const a = document.createElement("div"); a.className = "tx"; a.textContent = `${t}  > ${line}`;
+    const b = document.createElement("div"); if (err) b.className = "err"; b.textContent = `          < ${reply}`;
+    const stick = term.scrollTop + term.clientHeight >= term.scrollHeight - 4;
+    term.append(a, b);
+    while (term.childNodes.length > 2000) term.firstChild.remove();
+    if (stick) term.scrollTop = term.scrollHeight;
+  },
+
+  // ------------------------------------------------------------------ actions
+  async setTime() {
+    try {
+      const now = Date.now(), target = new Date(Math.floor(now / 1000) * 1000 + 1000);
+      await sleep(target - now);
+      const reply = await this.exchange(timeCommand(target));
+      if (this.check(reply, "Mise à l'heure")) { this.setStatus(`Carte mise à l'heure : ${reply.slice(3)} UTC.`); this.lastPoll = 0; }
+    } catch (e) { this.setStatus(`Mise à l'heure : ${e.message}`, true); }
+  },
+  async readLog() {
+    try {
+      const l = await this.exchange("L?"), n = await this.exchange("N?");
+      const ev = parseLog(l) || [], body = $("logBody");
+      body.replaceChildren();
+      if (!ev.length) { const tr = body.insertRow(); const td = tr.insertCell(); td.colSpan = 2; td.className = "muted"; td.textContent = "Journal vide."; }
+      ev.forEach((e, k) => { const tr = body.insertRow(); tr.insertCell().textContent = k + 1; tr.insertCell().textContent = EVENT_FR[e] || e; });
+      const c = parseKV(n, "N") || {};
+      for (const k in COUNTER_FR) $("cnt-" + k).textContent = c[k] ?? "—";
+    } catch (e) { /* signalé par la boucle d'état */ }
+  },
+  async clearLog() {
+    if (!confirm("Effacer le journal et les compteurs de la carte ?")) return;
+    try { const r = await this.exchange("LC"); if (this.check(r, "Effacement")) { this.setStatus("Journal effacé."); this.readLog(); } }
+    catch (e) { this.setStatus(`Effacement : ${e.message}`, true); }
+  },
+  async readOffsets() {
+    try { const v = parseOffsets(await this.exchange("O?")); if (v) { $("offO").value = v[0]; $("offC").value = v[1]; } }
+    catch (e) { /* idem */ }
+  },
+  async sendOffsets() {
+    const v = [Number($("offO").value), Number($("offC").value)];
+    if (!v.every(offsetValid)) { alert("Décalages : de −60 à +120 min, par pas de 5 min."); return; }
+    try {
+      const r = await this.exchange("O " + v.map(fmtOffset).join(" "));
+      if (this.check(r, "Décalages")) { this.setStatus(`Décalages enregistrés dans la carte : ${r.slice(3)} min.`); this.lastPoll = 0; }
+    } catch (e) { this.setStatus(`Décalages : ${e.message}`, true); }
+  },
+  async sendRaw() {
+    const line = $("termIn").value.trim();
+    if (!line) return;
+    $("termIn").value = "";
+    try { await this.exchange(line); } catch (e) { this.setStatus(`Terminal : ${e.message}`, true); }
+  },
+
+  // ------------------------------------------------------------------ essai moteur
+  motorPress(d) {
+    if (!this.link) { this.setStatus("Pas de carte connectée.", true); return; }
+    if (this.motorDir !== null) return;
+    this.motorDir = d;
+    $(d === "O" ? "mOpen" : "mClose").classList.add("active");
+    this.curves.push({dir: d, pts: []});
+    this.motorSend();
+    this.motorTimer = setInterval(() => this.motorSend(), MOTOR_REPEAT_MS);
+  },
+  motorRelease() {
+    clearInterval(this.motorTimer); this.motorTimer = null;
+    $("mOpen").classList.remove("active"); $("mClose").classList.remove("active");
+    if (this.motorDir === null) return;
+    this.motorDir = null;
+    if (this.link) this.exchange("M 0").then(r => this.onMotor(r)).catch(e => this.setStatus(`Essai moteur : ${e.message}`, true));
+  },
+  motorSend() {
+    if (this.motorDir === null || !this.link || this.motorBusy) return;
+    this.motorBusy = true;
+    this.exchange("M " + this.motorDir)
+      .then(r => this.onMotor(r))
+      .catch(e => { this.setStatus(`Essai moteur : ${e.message}`, true); this.motorRelease(); })
+      .finally(() => { this.motorBusy = false; });
+  },
+  onMotor(reply) {
+    if (!this.check(reply, "Essai moteur")) { this.motorRelease(); return; }
+    const m = parseKV(reply, "M");
+    if (!m) return;
+    const st = m.st || "?";
+    $("m-st").textContent = MOTOR_ST_FR[st] || st;
+    const t = (parseInt(m.t, 10) || 0) / 1000, i = parseInt(m.i, 10) || 0, imax = parseInt(m.imax, 10) || 0;
+    $("m-t").textContent = comma(t.toFixed(1)) + " s"; $("m-i").textContent = i + " mA"; $("m-imax").textContent = imax + " mA";
+    const cur = this.curves[this.curves.length - 1];
+    if (cur && (st !== "STOP" || !cur.pts.length)) cur.pts.push([t, imax]);
+    const sens = cur && cur.dir === "O" ? "ouverture" : "fermeture";
+    if (st === "STALL") { $("m-result").textContent = `Blocage confirmé en ${sens} au bout de ${comma(t.toFixed(1))} s : durée de course mesurée (butée atteinte).`; this.motorRelease(); }
+    else if (st === "TIMEOUT") { $("m-result").textContent = "Limite de durée atteinte sans blocage."; this.motorRelease(); }
+    else if (st === "NO_CURRENT") { $("m-result").textContent = "Moteur commandé sans courant : vérifier le câblage du moteur (J2)."; this.motorRelease(); }
+    this.drawPlot();
+  },
+
+  drawPlot() {
+    const cv = $("plot"), dpr = window.devicePixelRatio || 1, r = cv.getBoundingClientRect();
+    if (r.width < 50 || r.height < 50) return;
+    cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+    const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const css = getComputedStyle(document.documentElement), col = n => css.getPropertyValue(n).trim();
+    const w = r.width, h = r.height, ml = 52, mr = 14, mt = 24, mb = 28, pw = w - ml - mr, ph = h - mt - mb;
+    const x = t => ml + pw * Math.min(t, PLOT_T_MAX_S) / PLOT_T_MAX_S, y = i => mt + ph * (1 - Math.min(i, PLOT_I_MAX_MA) / PLOT_I_MAX_MA);
+    c.clearRect(0, 0, w, h);
+    c.font = "11px Segoe UI, system-ui, sans-serif"; c.lineWidth = 1;
+    c.strokeStyle = col("--soft"); c.fillStyle = col("--muted");
+    c.textAlign = "right"; c.textBaseline = "middle";
+    for (let i = 0; i <= PLOT_I_MAX_MA; i += 200) { c.beginPath(); c.moveTo(ml, y(i)); c.lineTo(ml + pw, y(i)); c.stroke(); c.fillText(i, ml - 6, y(i)); }
+    c.textAlign = "center"; c.textBaseline = "top";
+    for (let t = 0; t <= PLOT_T_MAX_S; t += 2) { c.beginPath(); c.moveTo(x(t), mt); c.lineTo(x(t), mt + ph); c.stroke(); c.fillText(t + " s", x(t), mt + ph + 8); }
+    c.textAlign = "left"; c.textBaseline = "top"; c.fillText("mA", 6, 4);
+    c.strokeStyle = col("--line"); c.strokeRect(ml, mt, pw, ph);
+    c.setLineDash([5, 4]); c.textAlign = "right"; c.textBaseline = "bottom";
+    for (const [v, txt, cn] of [[ILIM_MA, "limite du driver", "--ilim"], [STALL_OPEN_MA, "seuil blocage ouverture", "--thr-o"], [STALL_CLOSE_MA, "seuil blocage fermeture", "--thr-c"]]) {
+      c.strokeStyle = c.fillStyle = col(cn); c.beginPath(); c.moveTo(ml, y(v)); c.lineTo(ml + pw, y(v)); c.stroke(); c.fillText(txt, ml + pw - 4, y(v) - 3);
+    }
+    c.setLineDash([]); c.lineWidth = 2; c.lineJoin = "round";
+    for (const cur of this.curves) {
+      c.strokeStyle = c.fillStyle = col(cur.dir === "O" ? "--open" : "--close");
+      if (cur.pts.length >= 2) { c.beginPath(); cur.pts.forEach(([t, i], k) => k ? c.lineTo(x(t), y(i)) : c.moveTo(x(t), y(i))); c.stroke(); }
+      else if (cur.pts.length) { c.beginPath(); c.arc(x(cur.pts[0][0]), y(cur.pts[0][1]), 2.5, 0, 7); c.fill(); }
+    }
+    c.font = "bold 12px Segoe UI, system-ui, sans-serif"; c.textAlign = "left"; c.textBaseline = "top";
+    c.fillStyle = col("--open"); c.fillText("— ouverture", ml + 8, mt + 8);
+    c.fillStyle = col("--close"); c.fillText("— fermeture", ml + 100, mt + 8);
+  },
+
+  // ------------------------------------------------------------------ simulateur
+  simApply() {
+    const v = Number($("simVbat").value);
+    $("simVbatLbl").textContent = comma(v.toFixed(2)) + " V";
+    if (this.board) {
+      this.board.mode = document.querySelector("input[name=simMode]:checked").value;
+      this.board.vbat = Math.round(v * 1000);
+    }
+    this.lastPoll = 0;
+  },
+  renderSim() {},
+};
+
+// ======================================================================
+// Branchements de l'interface
+// ======================================================================
+for (const [k, lbl] of Object.entries(COUNTER_FR)) {
+  const dt = document.createElement("dt"), dd = document.createElement("dd");
+  dt.textContent = lbl; dd.id = "cnt-" + k; dd.textContent = "—"; $("counters").append(dt, dd);
+}
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
+  document.querySelectorAll("section.tab").forEach(s => s.classList.toggle("on", s.id === "tab-" + b.dataset.tab));
+  b.scrollIntoView({block: "nearest", inline: "nearest"});
+  if (b.dataset.tab === "motor") app.drawPlot();
+  if (b.dataset.tab === "sun") sunView.render();
+  if (b.dataset.tab === "log" && app.link) app.readLog();
+}));
+const HAS_SOURCE = {serial: "serial" in navigator, ble: "bluetooth" in navigator, sim: true};
+for (const o of $("source").options) if (!HAS_SOURCE[o.value]) { o.disabled = true; o.textContent += " — indisponible ici"; }
+try { const v = localStorage.getItem("ppm.source"); if (HAS_SOURCE[v]) $("source").value = v; } catch (_) {}
+if (!HAS_SOURCE[$("source").value]) $("source").value = HAS_SOURCE.ble ? "ble" : "sim";
+if (!HAS_SOURCE.serial && !HAS_SOURCE.ble) $("noLink").style.display = "block";
+$("source").addEventListener("change", () => { try { localStorage.setItem("ppm.source", $("source").value); } catch (_) {} });
+$("connBtn").addEventListener("click", () => app.link ? app.disconnect() : app.connect());
+$("setTimeBtn").addEventListener("click", () => app.setTime());
+$("logReadBtn").addEventListener("click", () => app.readLog());
+$("logClearBtn").addEventListener("click", () => app.clearLog());
+$("offReadBtn").addEventListener("click", () => app.readOffsets());
+$("offSendBtn").addEventListener("click", () => app.sendOffsets());
+$("termSend").addEventListener("click", () => app.sendRaw());
+$("termIn").addEventListener("keydown", e => { if (e.key === "Enter") app.sendRaw(); });
+$("plotClear").addEventListener("click", () => { app.curves = []; app.drawPlot(); });
+for (const [id, d] of [["mOpen", "O"], ["mClose", "C"]]) {
+  const b = $(id);
+  b.addEventListener("pointerdown", e => { b.setPointerCapture(e.pointerId); app.motorPress(d); });
+  for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) b.addEventListener(ev, () => app.motorRelease());
+  b.addEventListener("contextmenu", e => e.preventDefault());
+}
+// Clavier : flèches maintenues sur l'onglet Essai moteur
+document.addEventListener("keydown", e => {
+  if (!$("tab-motor").classList.contains("on") || e.repeat || e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowRight") { e.preventDefault(); app.motorPress("O"); }
+  if (e.key === "ArrowLeft") { e.preventDefault(); app.motorPress("C"); }
+});
+document.addEventListener("keyup", e => { if (e.key === "ArrowRight" || e.key === "ArrowLeft") app.motorRelease(); });
+// Sécurité : on arrête le moteur si la fenêtre perd le focus
+window.addEventListener("blur", () => app.motorRelease());
+document.addEventListener("visibilitychange", () => { if (document.hidden) app.motorRelease(); });
+if ("serial" in navigator) navigator.serial.addEventListener("disconnect", e => { if (app.link && app.link.port === e.target) app.onLinkLost(new Error("adaptateur débranché")); });
+document.querySelectorAll("input[name=simMode]").forEach(r => r.addEventListener("change", () => app.simApply()));
+$("simVbat").addEventListener("input", () => app.simApply());
+$("simRtc").addEventListener("click", () => { if (app.board) app.board.rtcValid = false; app.setStatus("Pile de la RTC retirée : horloge invalide, à remettre à l'heure."); app.lastPoll = 0; });
+$("simObst").addEventListener("click", () => { if (app.board) app.board.injectObstacle = true; app.setStatus("Obstacle à la prochaine fermeture."); });
+window.addEventListener("resize", () => app.drawPlot());
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => app.drawPlot());
+setInterval(() => app.tick(), 50);
+</script>
+<script>
+"use strict";
+// ======================================================================
+// Scène du poulailler : porte, ciel, poules et voyant, d'après l'état de la carte
+// ======================================================================
+const scene = (() => {
+  const TRAVEL_S = 26;                       // durée de course estimée (simulateur)
+  const henTpl = document.getElementById("hen").innerHTML;
+  const NS = "http://www.w3.org/2000/svg";
+  // Poules dehors : copies en ligne du dessin, pour décaler leurs animations
+  const hens = [
+    {id: "hen1", x: 180, y: 258, w: 70, h: 62, c: "#c46a2c", d: 0},
+    {id: "hen2", x: 540, y: 266, w: 64, h: 56, c: "#f4ece0", d: 1.1, flip: true},
+    {id: "hen3", x: 650, y: 280, w: 58, h: 52, c: "#3b3330", d: 2.0},
+    {id: "hen4", x: 262, y: 276, w: 52, h: 46, c: "#d9a35b", d: 0.6, flip: true},
+  ];
+  const out = document.getElementById("hensOut");
+  out.replaceChildren();
+  for (const h of hens) {
+    const g = document.createElementNS(NS, "g");
+    g.setAttribute("class", "hen");
+    const s = document.createElementNS(NS, "svg");
+    for (const [k, v] of Object.entries({x: h.x, y: h.y, width: h.w, height: h.h, viewBox: "0 0 80 70", overflow: "visible"})) s.setAttribute(k, v);
+    s.style.color = h.c;
+    s.innerHTML = h.flip ? `<g transform="translate(80 0) scale(-1 1)">${henTpl}</g>` : henTpl;
+    s.querySelectorAll(".head, .body").forEach(e => e.style.animationDelay = `-${h.d}s`);
+    g.append(s); out.append(g);
+  }
+
+  let doorX = 0.35, lastT = performance.now(), ledT0 = 0, ledCode = -1;
+  const el = id => document.getElementById(id);
+  const op = (id, v) => el(id).setAttribute("opacity", v.toFixed(3));
+  const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+  const hm = s => { const m = /^(\d\d):(\d\d)$/.exec(s || ""); return m ? +m[1] * 60 + +m[2] : null; };
+
+  function dayTimes() {
+    // Heures du jour en minutes locales : celles de la carte, sinon un calcul local (Arleuf)
+    const s = app.linkOk ? app.status : {};
+    const now = app.boardNow() || new Date();
+    const m = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+    let o = null, c = null;
+    if (s.rtc === "1") { o = hm(utcHHMMToLocal(s.open, now)); c = hm(utcHHMMToLocal(s.close, now)); }
+    if (o === null || c === null) {
+      const tz = -now.getTimezoneOffset(), sun = sunUTC(now);
+      const oo = Number(document.getElementById("offO").value) || 0, oc = Number(document.getElementById("offC").value) || 0;
+      o = (eventMin(sun.rise, oo) + tz + 1440) % 1440;
+      c = (eventMin(sun.set, oc) + tz + 1440) % 1440;
+    }
+    return {m, o, c, now};
+  }
+
+  function update(dt) {
+    const s = app.linkOk ? app.status : {};
+    const st = s.st || "", pos = s.pos || "";
+    // ---- porte
+    if (app.board && app.board.test && app.board.test.st === "RUN") doorX = app.board.doorX;
+    else if (st === "OPENING" || st === "CLEARING" || (st === "TEST" && app.motorDir === "O")) doorX += dt / TRAVEL_S;
+    else if (st === "CLOSING" || (st === "TEST" && app.motorDir === "C")) doorX -= dt / TRAVEL_S;
+    else if (pos === "OPEN") doorX += (1 - doorX) * Math.min(1, dt * 3);
+    else if (pos === "CLOSED") doorX += (0 - doorX) * Math.min(1, dt * 3);
+    doorX = clamp(doorX, 0, 1);
+    el("door").setAttribute("transform", `translate(0 ${(-doorX * 82).toFixed(1)})`);
+
+    // ---- ciel
+    const {m, o, c, now} = dayTimes();
+    const near = (a, b) => Math.max(0, 1 - Math.abs(a - b) / 40);
+    const isDay = m >= o && m < c;
+    const dusk = Math.max(near(m, o), near(m, c));
+    const night = isDay ? 0 : 1 - dusk;
+    op("duskSky", dusk * 0.9); op("nightSky", night); op("stars", night);
+    const f = clamp((m - o) / (c - o), 0, 1);
+    el("sun").setAttribute("transform", `translate(${60 + 780 * f} ${210 - 170 * Math.sin(Math.PI * f)})`);
+    el("sun").setAttribute("opacity", (isDay ? 1 : dusk).toFixed(2));
+    const nightLen = 1440 - (c - o), fn = clamp(((m - c + 1440) % 1440) / nightLen, 0, 1);
+    el("moon").setAttribute("transform", `translate(${60 + 780 * fn} ${200 - 150 * Math.sin(Math.PI * fn)})`);
+    op("moon", night);
+    el("moonShade").setAttribute("fill", "#1a2550");
+    el("clouds").setAttribute("opacity", (0.9 * (1 - night * 0.7)).toFixed(2));
+
+    // ---- poules
+    const outside = isDay && doorX > 0.8 && st !== "CLOSING" && st !== "FAULT" ? 1 : 0;
+    const cur = +out.getAttribute("opacity");
+    op("hensOut", cur + (outside - cur) * Math.min(1, dt * 2));
+    op("grain", outside * 0.9);
+    const sleeping = !isDay || doorX < 0.15;
+    op("henInside", doorX > 0.05 && sleeping ? 1 : 0);
+    op("windowGlow", night > 0.4 ? 0.8 : 0);
+    op("zzz", night > 0.5 && doorX < 0.1 ? 1 : 0);
+    op("henBlock", st === "CLEARING" || s.fault === "OBSTACLE" ? 1 : 0);
+
+    // ---- voyant de la carte : n éclats puis une pause
+    const code = app.linkOk ? (parseInt(s.led || "0", 10) || 0) : 0;
+    if (code !== ledCode) { ledCode = code; ledT0 = performance.now(); }
+    let on = false;
+    if (code > 0) {
+      const t = (performance.now() - ledT0) % (code * 500 + 1500);
+      on = t < code * 500 && t % 500 < 250;
+    }
+    el("led").setAttribute("fill", on ? "#ff5a3c" : "#5a2a22"); op("ledGlow", on ? 0.55 : 0);
+
+    // ---- bulles d'information
+    let msg;
+    if (!app.link) msg = "Branchez la carte pour voir le poulailler.";
+    else if (!app.linkOk) msg = "La carte ne répond pas…";
+    else if (s.fault && s.fault !== "NONE") msg = `Défaut : ${FAULT_FR[s.fault] || s.fault}`;
+    else if (st === "OPENING") msg = "La porte s'ouvre : bonjour les poules !";
+    else if (st === "CLOSING") msg = "La porte se ferme : tout le monde au perchoir.";
+    else if (st === "CLEARING") msg = "Obstacle ! La porte se rouvre pour dégager.";
+    else if (st === "TEST") msg = "Essai du moteur en cours.";
+    else if (s.mode === "INVALID") msg = "Sélecteur incohérent : vérifier le câblage.";
+    else if (pos === "OPEN") msg = isDay ? "Porte ouverte : les poules profitent du jardin." : "Porte ouverte.";
+    else if (pos === "CLOSED") msg = isDay ? "Porte fermée." : "Porte fermée : bonne nuit les poules.";
+    else msg = "Position de la porte inconnue.";
+    el("sceneMsg").textContent = msg;
+    el("sceneMsg").className = "chip" + (s.fault && s.fault !== "NONE" || s.mode === "INVALID" ? " alert" : "");
+    const b = app.boardNow();
+    el("sceneClock").hidden = !b;
+    if (b) el("sceneClock").textContent = `${pad(b.getHours())}:${pad(b.getMinutes())}`;
+    el("sceneLed").hidden = !(code > 0);
+    if (code > 0) { el("sceneLed").textContent = `Voyant : ${code} éclat${code > 1 ? "s" : ""}`; el("sceneLed").className = "chip alert"; }
+
+    // ---- frise de la journée
+    const tl = el("timeline");
+    tl.style.setProperty("--o", (o / 14.4).toFixed(1) + "%");
+    tl.style.setProperty("--c", (c / 14.4).toFixed(1) + "%");
+    tl.style.setProperty("--n", (m / 14.4).toFixed(2) + "%");
+
+    // ---- batterie et témoin de liaison
+    const v = parseInt(s.vbat, 10);
+    const fill = el("battFill");
+    fill.style.width = Number.isNaN(v) ? "0%" : clamp((v - 11500) / 1500 * 100, 4, 100).toFixed(0) + "%";
+    fill.style.background = s.batt === "CRITICAL" ? "var(--alert)" : s.batt === "LOW" ? "var(--warn)" : "var(--meadow)";
+    el("linkDot").className = "dot" + (app.linkOk ? " on" : app.link ? " bad" : "");
+  }
+
+  setInterval(() => {
+    const t = performance.now(), dt = Math.min(0.5, (t - lastT) / 1000);
+    lastT = t;
+    update(dt);
+  }, 100);
+  return {update: () => update(0)};
+})();
+</script>
+<script>
+"use strict";
+// ======================================================================
+// Onglet Soleil : la table de la carte sur l'année ou mois par mois
+// ======================================================================
+const sunView = (() => {
+  const MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+  const MOIS_C = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
+  const MOIS_A = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+  const JOURS = ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."];
+  const today = new Date();
+  let mode = "year", year = today.getFullYear(), month = today.getMonth(), utc = false, days = [], hover = null;
+  const $ = id => document.getElementById(id);
+  const hm = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+  const dur = m => `${Math.floor(m / 60)} h ${pad(m % 60)}`;
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+  function offsets() {
+    const o = Number($("offO").value), c = Number($("offC").value);
+    return [offsetValid(o) ? o : 0, offsetValid(c) ? c : 30];
+  }
+  function info(y, m, d, off) {
+    const s = sunTable(sunDayOf(m, d)), o = eventMin(s.rise, off[0]), c = eventMin(s.set, off[1]);
+    const loc = mn => { if (utc) return mn; const t = new Date(Date.UTC(y, m, d, 0, mn)); return t.getHours() * 60 + t.getMinutes(); };
+    return {y, m, d, wd: new Date(y, m, d).getDay(), rise: loc(s.rise), set: loc(s.set), open: loc(o), close: loc(c),
+            dayLen: s.set - s.rise, openLen: c - o};
+  }
+  function build() {
+    const off = offsets();
+    days = [];
+    if (mode === "year") { for (let m = 0; m < 12; m++) for (let d = 1; d <= new Date(year, m + 1, 0).getDate(); d++) days.push(info(year, m, d, off)); }
+    else for (let d = 1; d <= new Date(year, month + 1, 0).getDate(); d++) days.push(info(year, month, d, off));
+    return off;
+  }
+  const isToday = x => x.y === today.getFullYear() && x.m === today.getMonth() && x.d === today.getDate();
+  const label = x => `${JOURS[x.wd]} ${x.d} ${MOIS[x.m]}`;
+  const pick = (k, best) => days.reduce((a, b) => (best(b[k], a[k]) ? b : a));
+
+  function kpis(off) {
+    const e = pick("open", (a, b) => a < b), l = pick("close", (a, b) => a > b);
+    const lo = pick("dayLen", (a, b) => a > b), sh = pick("dayLen", (a, b) => a < b);
+    const box = (lbl, val, sub) => `<div class="kpi"><div class="lbl">${lbl}</div><div class="val">${val}</div><div class="sub">${sub}</div></div>`;
+    let html = box("Ouvre au plus tôt", hm(e.open), label(e)) + box("Ferme au plus tard", hm(l.close), label(l)) +
+               box("Jour le plus long", dur(lo.dayLen), label(lo)) + box("Jour le plus court", dur(sh.dayLen), label(sh));
+    if (mode === "month" && days.length > 1) {
+      const a = days[0], b = days[days.length - 1], g = b.dayLen - a.dayLen;
+      html += box("Sur le mois", `${g >= 0 ? "+" : "−"}${Math.abs(g)} min`, g >= 0 ? "de jour en plus" : "de jour en moins");
+    }
+    $("sunKpis").innerHTML = html;
+    $("sunOffsets").textContent = `Ouverture : lever ${fmtOffset(off[0])} min · fermeture : coucher ${fmtOffset(off[1])} min ` +
+      `(onglet Horaires) · heures ${utc ? "UTC" : "légales, changements d'heure compris"}`;
+  }
+
+  function table() {
+    const head = $("sunHead"), body = $("sunBody");
+    body.replaceChildren();
+    if (mode === "month") {
+      head.innerHTML = "<tr><th>Jour</th><th>Lever</th><th>Coucher</th><th>Ouverture</th><th>Fermeture</th><th>Porte ouverte</th><th>Durée du jour</th></tr>";
+      for (const x of days) {
+        const tr = body.insertRow(); if (isToday(x)) tr.className = "today";
+        tr.innerHTML = `<td>${JOURS[x.wd]} ${x.d}</td><td>${hm(x.rise)}</td><td>${hm(x.set)}</td><td class="o">${hm(x.open)}</td>` +
+                       `<td class="c">${hm(x.close)}</td><td>${dur(x.openLen)}</td><td>${dur(x.dayLen)}</td>`;
+      }
+    } else {
+      head.innerHTML = "<tr><th>Mois</th><th>Lever</th><th>Coucher</th><th>Ouverture</th><th>Fermeture</th><th>Durée du jour</th></tr>";
+      for (let m = 0; m < 12; m++) {
+        const md = days.filter(x => x.m === m), a = md[0], b = md[md.length - 1];
+        const tr = body.insertRow(); if (m === today.getMonth() && year === today.getFullYear()) tr.className = "today";
+        const r = k => `${hm(a[k])} → ${hm(b[k])}`;
+        tr.innerHTML = `<td>${MOIS[m]}</td><td>${r("rise")}</td><td>${r("set")}</td><td class="o">${r("open")}</td>` +
+                       `<td class="c">${r("close")}</td><td>${dur(a.dayLen)} → ${dur(b.dayLen)}</td>`;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- graphique
+  let geo = null;
+  function draw() {
+    const cv = $("sunPlot"), r = cv.getBoundingClientRect();
+    if (r.width < 50 || r.height < 50 || !days.length) return;
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+    const c = cv.getContext("2d"); c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = r.width, h = r.height, ml = 46, mr = 12, mt = 12, mb = 28, pw = w - ml - mr, ph = h - mt - mb;
+    const lo = Math.max(0, Math.floor((Math.min(...days.map(x => Math.min(x.rise, x.open))) - 45) / 120) * 120);
+    const hi = Math.min(1440, Math.ceil((Math.max(...days.map(x => Math.max(x.set, x.close))) + 45) / 120) * 120);
+    const n = days.length, bw = pw / n;
+    const X = i => ml + bw * (i + 0.5), Y = mn => mt + ph * (1 - (mn - lo) / (hi - lo));
+    geo = {ml, bw, n, mt, ph, X, Y};
+    c.clearRect(0, 0, w, h);
+    // nuit, puis jour (lever → coucher), puis porte ouverte
+    c.fillStyle = css("--night"); c.globalAlpha = .9; c.fillRect(ml, mt, pw, ph); c.globalAlpha = 1;
+    const band = (k1, k2, fill, alpha, larg) => {
+      c.fillStyle = fill; c.globalAlpha = alpha;
+      if (mode === "month") {
+        for (let i = 0; i < n; i++) { const x0 = ml + bw * (i + (1 - larg) / 2), x1 = bw * larg; c.fillRect(x0, Y(days[i][k2]), x1, Y(days[i][k1]) - Y(days[i][k2])); }
+      } else {
+        c.beginPath(); c.moveTo(ml, Y(days[0][k1]));
+        days.forEach((x, i) => c.lineTo(X(i), Y(x[k1]))); c.lineTo(ml + pw, Y(days[n - 1][k1]));
+        c.lineTo(ml + pw, Y(days[n - 1][k2]));
+        for (let i = n - 1; i >= 0; i--) c.lineTo(X(i), Y(days[i][k2]));
+        c.lineTo(ml, Y(days[0][k2])); c.closePath(); c.fill();
+      }
+      c.globalAlpha = 1;
+    };
+    band("rise", "set", css("--sky"), 1, .76);
+    band("open", "close", css("--meadow"), mode === "month" ? .95 : .3, .34);
+    // graduations des heures
+    c.font = "11.5px Nunito, Segoe UI, sans-serif"; c.textAlign = "right"; c.textBaseline = "middle";
+    for (let t = lo; t <= hi; t += 120) {
+      c.strokeStyle = "rgba(255,255,255,.22)"; c.lineWidth = 1; c.beginPath(); c.moveTo(ml, Y(t)); c.lineTo(ml + pw, Y(t)); c.stroke();
+      c.fillStyle = css("--muted"); c.fillText(`${t / 60} h`, ml - 6, Y(t));
+    }
+    // graduations des jours ou des mois
+    c.textAlign = "center"; c.textBaseline = "top";
+    if (mode === "year") {
+      let i0 = 0;
+      for (let m = 0; m < 12; m++) {
+        const len = days.filter(x => x.m === m).length;
+        if (m) { c.strokeStyle = "rgba(255,255,255,.18)"; c.beginPath(); c.moveTo(ml + bw * i0, mt); c.lineTo(ml + bw * i0, mt + ph); c.stroke(); }
+        c.fillStyle = css("--muted"); c.fillText(pw > 520 ? MOIS_A[m] : MOIS_C[m], ml + bw * (i0 + len / 2), mt + ph + 8);
+        i0 += len;
+      }
+    } else {
+      const every = pw / n > 18 ? 1 : pw / n > 9 ? 2 : 5;
+      days.forEach((x, i) => { if ((x.d - 1) % every === 0 || x.d === n) { c.fillStyle = css("--muted"); c.fillText(x.d, X(i), mt + ph + 8); } });
+    }
+    // courbes
+    if (mode === "year") {
+      const line = (k, col, wdt, dash) => {
+        c.strokeStyle = col; c.lineWidth = wdt; c.setLineDash(dash || []); c.beginPath();
+        days.forEach((x, i) => (i ? c.lineTo(X(i), Y(x[k])) : c.moveTo(X(i), Y(x[k])))); c.stroke(); c.setLineDash([]);
+      };
+      line("rise", css("--sun"), 1.5, [4, 3]); line("set", css("--sun"), 1.5, [4, 3]);
+      line("open", css("--open"), 2.2); line("close", css("--close"), 2.2);
+    }
+    // aujourd'hui
+    const ti = days.findIndex(isToday);
+    if (ti >= 0) {
+      c.strokeStyle = css("--barn"); c.lineWidth = 2; c.beginPath(); c.moveTo(X(ti), mt); c.lineTo(X(ti), mt + ph); c.stroke();
+      c.fillStyle = css("--barn"); c.beginPath(); c.arc(X(ti), mt + 5, 4, 0, 7); c.fill();
+    }
+    // survol
+    if (hover !== null && hover < n) {
+      const x = days[hover];
+      c.strokeStyle = "rgba(255,255,255,.85)"; c.lineWidth = 1; c.beginPath(); c.moveTo(X(hover), mt); c.lineTo(X(hover), mt + ph); c.stroke();
+      for (const [k, col] of [["open", "--open"], ["close", "--close"], ["rise", "--sun"], ["set", "--sun"]]) {
+        c.fillStyle = css(col); c.strokeStyle = "#fff"; c.lineWidth = 1.5; c.beginPath(); c.arc(X(hover), Y(x[k]), 4, 0, 7); c.fill(); c.stroke();
+      }
+    }
+  }
+  function tip(ev) {
+    if (!geo) return;
+    const cv = $("sunPlot"), r = cv.getBoundingClientRect(), px = ev.clientX - r.left;
+    const i = Math.floor((px - geo.ml) / geo.bw);
+    if (i < 0 || i >= geo.n) { leave(); return; }
+    if (i !== hover) { hover = i; draw(); }
+    const x = days[i], t = $("sunTip");
+    t.innerHTML = `<b>${label(x)} ${x.y}</b><dl><dt>Lever</dt><dd>${hm(x.rise)}</dd><dt>Ouverture</dt><dd class="ok">${hm(x.open)}</dd>` +
+                  `<dt>Coucher</dt><dd>${hm(x.set)}</dd><dt>Fermeture</dt><dd>${hm(x.close)}</dd>` +
+                  `<dt>Porte ouverte</dt><dd>${dur(x.openLen)}</dd><dt>Durée du jour</dt><dd>${dur(x.dayLen)}</dd></dl>`;
+    t.hidden = false;
+    const tw = t.offsetWidth, left = px + 16 + tw > r.width ? px - tw - 16 : px + 16;
+    t.style.left = Math.max(4, left) + "px"; t.style.top = "14px";
+  }
+  function leave() { hover = null; $("sunTip").hidden = true; draw(); }
+
+  // ---------------------------------------------------------------- comparaison avec la carte
+  function check() {
+    const p = $("sunCheck"), s = app.linkOk ? app.status : {}, b = app.boardNow();
+    if (!b || s.rtc !== "1" || !/^\d\d:\d\d$/.test(s.open || "")) {
+      p.className = "note"; p.textContent = "Connectez la carte (horloge valide) pour comparer ses horaires du jour avec cette table.";
+      return;
+    }
+    const sun = sunUTC(b), oo = parseInt(s.oo, 10), oc = parseInt(s.oc, 10);
+    const eo = hm(eventMin(sun.rise, oo)), ec = hm(eventMin(sun.set, oc));
+    const same = eo === s.open && ec === s.close;
+    p.className = same ? "ok" : "alert";
+    p.textContent = same
+      ? `Aujourd'hui, la carte annonce l'ouverture à ${utcHHMMToLocal(s.open, b)} et la fermeture à ${utcHHMMToLocal(s.close, b)} : identique à cette table.`
+      : `Écart : la carte annonce ${s.open}–${s.close} UTC, la table donne ${eo}–${ec} UTC (décalages ${s.oo} / ${s.oc}). Le firmware a-t-il la même table ?`;
+  }
+
+  function render() {
+    const off = build();
+    $("sunPeriod").textContent = mode === "year" ? String(year) : `${MOIS[month]} ${year}`;
+    kpis(off); table(); draw(); check();
+  }
+  function step(k) {
+    if (mode === "year") year += k;
+    else { month += k; if (month < 0) { month = 11; year--; } if (month > 11) { month = 0; year++; } }
+    hover = null; render();
+  }
+  document.querySelectorAll("#sunMode button").forEach(bt => bt.addEventListener("click", () => {
+    mode = bt.dataset.v;
+    document.querySelectorAll("#sunMode button").forEach(x => x.setAttribute("aria-pressed", x === bt));
+    hover = null; render();
+  }));
+  $("sunPrev").addEventListener("click", () => step(-1));
+  $("sunNext").addEventListener("click", () => step(1));
+  $("sunToday").addEventListener("click", () => { year = today.getFullYear(); month = today.getMonth(); render(); });
+  $("sunUtc").addEventListener("change", e => { utc = e.target.checked; render(); });
+  $("sunPlot").addEventListener("pointermove", tip);
+  $("sunPlot").addEventListener("pointerleave", leave);
+  $("sunPlot").addEventListener("click", () => {     // en vue annuelle, un clic ouvre le mois
+    if (mode !== "year" || hover === null) return;
+    month = days[hover].m; mode = "month";
+    document.querySelectorAll("#sunMode button").forEach(x => x.setAttribute("aria-pressed", x.dataset.v === "month"));
+    hover = null; render();
+  });
+  for (const id of ["offO", "offC"]) $(id).addEventListener("input", () => { if ($("tab-sun").classList.contains("on")) render(); });
+  window.addEventListener("resize", () => { if ($("tab-sun").classList.contains("on")) draw(); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+  setInterval(() => { if ($("tab-sun").classList.contains("on")) check(); }, 2000);
+  return {render};
+})();
+</script>
+</body>
+</html>
