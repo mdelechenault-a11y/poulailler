@@ -766,35 +766,57 @@ class SerialLink extends LineLink {
 // ---------------------------------------------------------------- Bluetooth (Web Bluetooth)
 // Module BLE « UART transparent » branché sur J4 : HM-10 et ses clones (service FFE0, caractéristique FFE1
 // qui notifie et accepte l'écriture), ou tout module au service UART de Nordic.
-const BLE_SERVICES = [0xffe0, "6e400001-b5a3-f393-e0a9-e50e24dcca9e"];
+// UUID complets plutôt que l'alias 0xffe0 : forme acceptée par toutes les mises en œuvre (Bluefy compris).
+const BLE_SERVICES = ["0000ffe0-0000-1000-8000-00805f9b34fb", "6e400001-b5a3-f393-e0a9-e50e24dcca9e"];
 const BLE_NAMES = ["HM", "BT05", "MLT", "CC41", "JDY", "DSD", "Poul"];   // noms d'usine courants, ou renommé « Poul… »
+const BLE_CANCEL = /cancel|select|annul/i;
+
+// Erreur Web Bluetooth lisible : Bluefy rejette parfois avec un simple nombre au lieu d'une erreur.
+const bleWhy = e => e && typeof e === "object" && e.name ? (e.message ? `${e.name} : ${e.message}` : e.name) : `code ${String(e)}`;
 
 class BleLink extends LineLink {
   static async open() {
-    const device = await navigator.bluetooth.requestDevice({
-      filters: [...BLE_SERVICES.map(u => ({services: [u]})), ...BLE_NAMES.map(p => ({namePrefix: p}))],
-      optionalServices: BLE_SERVICES});
+    // Après une recherche refusée, la suivante montre tous les appareils (sans filtre) : certains modules
+    // n'annoncent ni le service FFE0 ni un nom connu, et certains navigateurs refusent les filtres.
+    const all = app.bleAll;
+    let device;
+    try {
+      device = await navigator.bluetooth.requestDevice(all ? {acceptAllDevices: true, optionalServices: BLE_SERVICES} : {
+        filters: [...BLE_SERVICES.map(u => ({services: [u]})), ...BLE_NAMES.map(p => ({namePrefix: p}))],
+        optionalServices: BLE_SERVICES});
+    } catch (e) {
+      if (e && e.name === "NotFoundError" && BLE_CANCEL.test(e.message || "")) throw e;     // liste fermée sans choix
+      if (all) throw new LinkError(`recherche des appareils refusée (${bleWhy(e)})`);
+      app.setBleAll(true);
+      throw new LinkError(`recherche du module refusée (${bleWhy(e)}). Appuyer de nouveau sur « Connecter » : ` +
+                          "la liste montrera tous les appareils Bluetooth");
+    }
     app.setStatus(`Connexion à ${device.name || "un module Bluetooth"}…`);
+    let step = "connexion au module", last = null;
     try {
       const server = await device.gatt.connect();
       for (const uuid of BLE_SERVICES) {
         let service;
-        try { service = await server.getPrimaryService(uuid); } catch (_) { continue; }
+        step = "recherche du service série";
+        try { service = await server.getPrimaryService(uuid); } catch (e) { last = e; continue; }
         // Réception : la caractéristique qui notifie ; émission : la même si elle accepte l'écriture
         // (HM-10), sinon la première qui l'accepte (Nordic, quelques clones)
+        step = "lecture des caractéristiques";
         const chars = await service.getCharacteristics();
         const canWrite = c => c.properties.write || c.properties.writeWithoutResponse;
         const rx = chars.find(c => c.properties.notify || c.properties.indicate);
         const tx = rx && canWrite(rx) ? rx : chars.find(canWrite);
         if (!rx || !tx) continue;
         const link = new BleLink(device, rx, tx);
+        step = "abonnement aux notifications";
         await link._start();
         return link;
       }
-      throw new LinkError(`${device.name || "ce module"} n'offre pas de liaison série (service FFE0 du HM-10)`);
+      throw new LinkError(`${device.name || "ce module"} n'offre pas de liaison série (service FFE0 du HM-10)` +
+                          (last ? ` : ${bleWhy(last)}` : ""));
     } catch (e) {
       try { device.gatt.disconnect(); } catch (_) {}
-      throw e;
+      throw e instanceof LinkError ? e : new LinkError(`${step} (${bleWhy(e)})`);
     }
   }
   constructor(device, rx, tx) {
@@ -1026,7 +1048,7 @@ class SimLink {
 // Application
 // ======================================================================
 const app = {
-  link: null, board: null, queue: Promise.resolve(), status: {}, boardTime: null, boardTimeAt: 0,
+  link: null, board: null, queue: Promise.resolve(), status: {}, boardTime: null, boardTimeAt: 0, bleAll: false,
   lastOk: 0, linkOk: false, pollBusy: false, motorDir: null, motorBusy: false, motorTimer: null, curves: [],
 
   setStatus(text, alert = false) { const f = $("status"); f.textContent = text; f.classList.toggle("alert", alert); },
@@ -1071,7 +1093,7 @@ const app = {
     } catch (e) {
       this.link = null;
       const msg = (e && e.message) || String(e);
-      if (e && e.name === "NotFoundError" && /cancel|select|annul/i.test(msg)) { this.setStatus(src === "ble" ? "Aucun module choisi." : "Aucun port choisi."); return; }
+      if (e && e.name === "NotFoundError" && BLE_CANCEL.test(msg)) { this.setStatus(src === "ble" ? "Aucun module choisi." : "Aucun port choisi."); return; }
       if (src === "ble" && /adapter|bluetooth.*(off|unavailable|disabled)/i.test(msg)) {
         this.setStatus("Connexion impossible : Bluetooth absent ou éteint sur cet appareil.", true); return;
       }
@@ -1083,6 +1105,11 @@ const app = {
     this.setStatus("Connecté. Interrogation de la carte…");
     this.linkOk = false; this.boardTime = null;
     this.readOffsets(); this.readStall(); this.readLog();
+  },
+
+  setBleAll(on) {
+    this.bleAll = on;
+    try { localStorage.setItem("ppm.bleAll", on ? "1" : ""); } catch (_) {}
   },
 
   async disconnect() {
@@ -1400,6 +1427,7 @@ document.querySelectorAll("nav button").forEach(b => b.addEventListener("click",
 const HAS_SOURCE = {serial: "serial" in navigator, ble: "bluetooth" in navigator, sim: true};
 for (const o of $("source").options) if (!HAS_SOURCE[o.value]) { o.disabled = true; o.textContent += " — indisponible ici"; }
 try { const v = localStorage.getItem("ppm.source"); if (HAS_SOURCE[v]) $("source").value = v; } catch (_) {}
+try { app.bleAll = localStorage.getItem("ppm.bleAll") === "1"; } catch (_) {}
 if (!HAS_SOURCE[$("source").value]) $("source").value = HAS_SOURCE.ble ? "ble" : "sim";
 if (!HAS_SOURCE.serial && !HAS_SOURCE.ble) $("noLink").style.display = "block";
 $("source").addEventListener("change", () => { try { localStorage.setItem("ppm.source", $("source").value); } catch (_) {} });
